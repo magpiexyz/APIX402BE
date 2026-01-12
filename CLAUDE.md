@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important Rules
+
+- **Always ask before pushing** - Never push to any git repository without explicit user approval. Commit locally, then ask before pushing.
+
 ## Project Overview
 
 APIX (IAO - Initial API Offering) is a decentralized API marketplace that enables developers to monetize their APIs through a bonding curve token model. The system consists of three main components across separate repositories:
