@@ -18,7 +18,6 @@ import { ChatSessionService } from './services/chatSessionService.js'
 import { LLMService } from './services/llmService.js'
 import { AgentToolService } from './services/agentToolService.js'
 import { AgentPaymentService } from './services/agentPaymentService.js'
-import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/chainConfigService.js'
 import { generateBuilderJWT } from './utils/jwtAuth.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -216,20 +215,6 @@ try {
 } catch (error) {
   console.error("⚠️  Failed to initialize Agent payment service:", error)
   console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
-}
-
-// Chain Config Service initialization
-const CHAIN_CONFIG_TABLE_NAME = process.env.CHAIN_CONFIG_TABLE_NAME || "apix-chain-configs"
-let chainConfigService: ChainConfigService | null = null
-try {
-  chainConfigService = new ChainConfigService(DYNAMODB_REGION, CHAIN_CONFIG_TABLE_NAME)
-  console.log(`✅ Chain config service initialized (Table: ${CHAIN_CONFIG_TABLE_NAME})`)
-  // Seed default configs on startup
-  chainConfigService.seedDefaultConfigs().catch(err => {
-    console.error("⚠️  Failed to seed chain configs:", err)
-  })
-} catch (error) {
-  console.error("⚠️  Failed to initialize Chain config service:", error)
 }
 
 
@@ -1299,44 +1284,6 @@ app.get('/api/server/:slug', async (req, res) => {
     return res.status(500).json({
       error: "Internal server error",
       message: error.message || "Failed to fetch server"
-    })
-  }
-})
-
-/**
- * GET /api/chains - Get all available chain configurations
- * Returns chain configs for frontend chain selection
- */
-app.get('/api/chains', async (_req, res) => {
-  try {
-    if (!chainConfigService) {
-      // Fallback to default configs if service not initialized
-      return res.json({
-        success: true,
-        chains: DEFAULT_CHAIN_CONFIGS
-      })
-    }
-
-    const chains = await chainConfigService.getAllChains()
-
-    // If no chains in DB, return defaults
-    if (chains.length === 0) {
-      return res.json({
-        success: true,
-        chains: DEFAULT_CHAIN_CONFIGS
-      })
-    }
-
-    return res.json({
-      success: true,
-      chains
-    })
-  } catch (error: any) {
-    console.error("❌ Failed to get chains:", error)
-    // Fallback to defaults on error
-    return res.json({
-      success: true,
-      chains: DEFAULT_CHAIN_CONFIGS
     })
   }
 })
