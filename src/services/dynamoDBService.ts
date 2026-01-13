@@ -33,16 +33,16 @@ function getDynamoDBClient(region: string): DynamoDBClient {
     
     // Explicitly set credentials if provided via environment variables
     // This is optional - if not set, AWS SDK will use the default credential chain
-    // if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-    //   config.credentials = {
-    //     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    //     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    //     ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
-    //   };
-    //   console.log(`🔑 Using explicit AWS credentials from environment variables`);
-    // } else {
-    //   console.log(`🔍 Using AWS SDK default credential chain (env vars, credentials file, or IAM role)`);
-    // }
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+      config.credentials = {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+      };
+      console.log(`🔑 Using explicit AWS credentials from environment variables`);
+    } else {
+      console.log(`🔍 Using AWS SDK default credential chain (env vars, credentials file, or IAM role)`);
+    }
     
     // Only set endpoint if explicitly provided for local testing
     if (process.env.DYNAMODB_ENDPOINT) {
