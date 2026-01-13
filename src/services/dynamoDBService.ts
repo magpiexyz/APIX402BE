@@ -33,24 +33,24 @@ function getDynamoDBClient(region: string): DynamoDBClient {
     
     // Explicitly set credentials if provided via environment variables
     // This is optional - if not set, AWS SDK will use the default credential chain
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-      config.credentials = {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
-      };
-      console.log(`🔑 Using explicit AWS credentials from environment variables`);
-    } else {
-      console.log(`🔍 Using AWS SDK default credential chain (env vars, credentials file, or IAM role)`);
-    }
+    // if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    //   config.credentials = {
+    //     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    //     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    //     ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+    //   };
+    //   console.log(`🔑 Using explicit AWS credentials from environment variables`);
+    // } else {
+    //   console.log(`🔍 Using AWS SDK default credential chain (env vars, credentials file, or IAM role)`);
+    // }
     
     // Only set endpoint if explicitly provided for local testing
-    // if (process.env.DYNAMODB_ENDPOINT) {
-    //   config.endpoint = process.env.DYNAMODB_ENDPOINT;
-    //   console.log(`🔧 Using local DynamoDB endpoint: ${config.endpoint}`);
-    // } else {
-    //   console.log(`🌐 Connecting to deployed AWS DynamoDB in region: ${region}`);
-    // }
+    if (process.env.DYNAMODB_ENDPOINT) {
+      config.endpoint = process.env.DYNAMODB_ENDPOINT;
+      console.log(`🔧 Using local DynamoDB endpoint: ${config.endpoint}`);
+    } else {
+      console.log(`🌐 Connecting to deployed AWS DynamoDB in region: ${region}`);
+    }
     
     dynamoDBClient = new DynamoDBClient(config);
   }
@@ -83,16 +83,30 @@ export interface ApiEntry {
  * One token can have multiple APIs (1:N relationship)
  * Each API has its own fee (per-API pricing)
  */
+/**
+ * Normalize address for storage/lookup
+ * EVM addresses (0x...) are lowercased for consistency
+ * Solana addresses (base58) are kept as-is since base58 is case-sensitive
+ */
+function normalizeAddress(address: string): string {
+  if (address.startsWith('0x')) {
+    return address.toLowerCase();
+  }
+  return address; // Solana addresses - keep original case
+}
+
 export interface IAOTokenDBEntry {
   id: string;                    // Token address (lowercase) - Primary Key
   slug: string;                  // Unique server slug (e.g., "magpie")
   name: string;                  // Token/server name
   symbol: string;                // Token symbol
-  builder: string;               // Builder address (lowercase)
-  paymentToken: string;          // Payment token address (lowercase)
+  builder: string;               // Builder address (lowercase for EVM, original case for Solana)
+  paymentToken: string;          // Payment token address
+  chainId: string;               // Chain ID: "84532" (Base Sepolia), "devnet" (Solana), etc.
   subscriptionCount: string;     // BigInt as string, default "0" - aggregated across all APIs
   refundCount: string;           // BigInt as string, default "0"
   fulfilledCount: string;        // BigInt as string, default "0"
+  totalFeesCollected?: string;   // BigInt as string - for Solana bonding progress tracking
   tags?: string[];               // Array of category tags (e.g., ["crypto", "trading"])
   apis: ApiEntry[];              // Array of registered APIs (each with own fee)
   createdAt: string;             // ISO timestamp
@@ -124,9 +138,10 @@ class DynamoDBService {
   }
 
   async getItem(id: string): Promise<IAOTokenDBEntry | null> {
+    const normalizedId = normalizeAddress(id);
     const params = {
       TableName: this.tableName,
-      Key: { id: id.toLowerCase() },
+      Key: { id: normalizedId },
     };
 
     try {
@@ -139,9 +154,10 @@ class DynamoDBService {
   }
 
   async deleteItem(id: string): Promise<void> {
+    const normalizedId = normalizeAddress(id);
     const params = {
       TableName: this.tableName,
-      Key: { id: id.toLowerCase() },
+      Key: { id: normalizedId },
     };
 
     try {
@@ -168,6 +184,7 @@ class DynamoDBService {
   }
 
   async scanItemsByBuilder(builderAddress: string): Promise<IAOTokenDBEntry[]> {
+    const normalizedBuilder = normalizeAddress(builderAddress);
     const params = {
       TableName: this.tableName,
       FilterExpression: "#builder = :builder",
@@ -175,7 +192,7 @@ class DynamoDBService {
         "#builder": "builder"
       },
       ExpressionAttributeValues: {
-        ":builder": builderAddress.toLowerCase()
+        ":builder": normalizedBuilder
       }
     };
 

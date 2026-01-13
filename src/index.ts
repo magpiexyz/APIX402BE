@@ -10,6 +10,8 @@ import { getContract, readContract } from 'thirdweb'
 import fetch from 'node-fetch'
 import fs from 'fs'
 import { decompress as decompressZstd } from 'fzstd'
+import { Connection, Transaction } from '@solana/web3.js'
+import bs58 from 'bs58'
 import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/dynamoDBService.js'
 import { UserRequestService } from './services/userRequestService.js'
 import { MetricsService } from './services/metricsService.js'
@@ -18,6 +20,7 @@ import { ChatSessionService } from './services/chatSessionService.js'
 import { LLMService } from './services/llmService.js'
 import { AgentToolService } from './services/agentToolService.js'
 import { AgentPaymentService } from './services/agentPaymentService.js'
+import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/chainConfigService.js'
 import { generateBuilderJWT } from './utils/jwtAuth.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -94,6 +97,47 @@ if (existsSync(publicPath)) {
 }
 
 const BASE_RPC_URL = "https://sepolia.base.org"
+const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com"
+
+// Address validation helpers for multi-chain support
+const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/i
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/  // Base58, 32-44 chars
+
+/**
+ * Validate an EVM address (0x + 40 hex chars)
+ */
+function isValidEvmAddress(address: string): boolean {
+  return EVM_ADDRESS_REGEX.test(address)
+}
+
+/**
+ * Validate a Solana address (base58, 32-44 chars)
+ */
+function isValidSolanaAddress(address: string): boolean {
+  return SOLANA_ADDRESS_REGEX.test(address)
+}
+
+/**
+ * Validate an address based on chain type
+ */
+function isValidAddressForChain(address: string, chainType: "evm" | "solana"): boolean {
+  if (chainType === "solana") {
+    return isValidSolanaAddress(address)
+  }
+  return isValidEvmAddress(address)
+}
+
+/**
+ * Get chain type from chainId (fallback to evm if not found)
+ */
+function getChainTypeFromId(chainId: string): "evm" | "solana" {
+  // Known Solana chains
+  if (chainId === "devnet" || chainId === "mainnet-beta" || chainId === "testnet") {
+    return "solana"
+  }
+  // Default to EVM
+  return "evm"
+}
 
 // JWT Authentication for Builder API
 const BUILDER_SECRET_PHRASE = process.env.BUILDER_SECRET_PHRASE || ""
@@ -104,7 +148,7 @@ if (!BUILDER_SECRET_PHRASE) {
 }
 
 // DynamoDB Service initialization
-const DYNAMODB_REGION = "us-west-1"
+const DYNAMODB_REGION = "us-east-1"
 const DYNAMODB_TABLE_NAME = "apix-iao-tokens"
 const USER_REQUEST_TABLE_NAME = "apix-iao-user-requests"
 const REQUEST_QUEUE_TABLE_NAME = "apix-iao-request-queue"
@@ -217,6 +261,30 @@ try {
   console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
 }
 
+// Chain Config Service initialization
+const CHAIN_CONFIG_TABLE_NAME = process.env.CHAIN_CONFIG_TABLE_NAME || "apix-chain-configs"
+let chainConfigService: ChainConfigService | null = null
+try {
+  chainConfigService = new ChainConfigService(DYNAMODB_REGION, CHAIN_CONFIG_TABLE_NAME)
+  console.log(`✅ Chain config service initialized (Table: ${CHAIN_CONFIG_TABLE_NAME})`)
+  // Seed default configs on startup
+  chainConfigService.seedDefaultConfigs().catch(err => {
+    console.error("⚠️  Failed to seed chain configs:", err)
+  })
+} catch (error) {
+  console.error("⚠️  Failed to initialize Chain config service:", error)
+}
+
+
+/**
+ * Normalize address - lowercase EVM addresses, preserve Solana addresses
+ */
+function normalizeAddress(address: string): string {
+  if (address.startsWith('0x')) {
+    return address.toLowerCase()
+  }
+  return address // Solana addresses are case-sensitive (base58)
+}
 
 /**
  * Extract user address from payment data (PAYMENT-SIGNATURE header - x402 V2)
@@ -227,12 +295,12 @@ function extractUserAddressFromPayment(paymentData: string): string | null {
     // Decode base64
     const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
     const paymentProof = JSON.parse(decoded)
-    
+
     // Extract from address from authorization
     if (paymentProof?.payload?.authorization?.from) {
-      return paymentProof.payload.authorization.from.toLowerCase()
+      return normalizeAddress(paymentProof.payload.authorization.from)
     }
-    
+
     return null
   } catch (error) {
     console.error("Error extracting user address from payment data:", error)
@@ -248,7 +316,9 @@ interface IAOTokenEntry {
   name: string              // Token/server name
   symbol: string            // Token symbol
   subscriptionCount?: string // Total usage count (aggregated across all APIs)
+  totalFeesCollected?: string // Total fees collected (for Solana bonding progress)
   paymentToken: string      // Payment token address (e.g., USDC)
+  chainId?: string          // Chain ID: "84532" (Base Sepolia), "devnet" (Solana), etc.
   tags?: string[]           // Array of category tags
   apis: ApiEntry[]          // Array of registered APIs (each with own fee)
 }
@@ -275,7 +345,9 @@ async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | n
         name: dbEntry.name,
         symbol: dbEntry.symbol,
         subscriptionCount: dbEntry.subscriptionCount,
+        totalFeesCollected: dbEntry.totalFeesCollected,
         paymentToken: dbEntry.paymentToken,
+        chainId: dbEntry.chainId,
         tags: dbEntry.tags,
         apis: dbEntry.apis || [],
       }
@@ -309,7 +381,9 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
         name: dbEntry.name,
         symbol: dbEntry.symbol,
         subscriptionCount: dbEntry.subscriptionCount,
+        totalFeesCollected: dbEntry.totalFeesCollected,
         paymentToken: dbEntry.paymentToken,
+        chainId: dbEntry.chainId,
         tags: dbEntry.tags,
         apis: dbEntry.apis || [],
       }
@@ -628,7 +702,11 @@ app.post('/api/register', async (req, res) => {
       builder,
       paymentToken,
       tags,       // Array of category tags (optional)
+      chainId = "84532",  // Chain ID: "84532" (Base Sepolia) or "devnet" (Solana)
     } = req.body
+
+    // Determine chain type from chainId
+    const chainType = getChainTypeFromId(chainId)
 
     // VALIDATION MODE: If tokenAddress is missing, just validate and return
     if (!tokenAddress) {
@@ -657,12 +735,13 @@ app.post('/api/register', async (req, res) => {
         })
       }
 
-      // Validate address format
-      const addressRegex = /^0x[a-fA-F0-9]{40}$/i
-      if (!addressRegex.test(builder)) {
+      // Validate address format based on chain type
+      if (!isValidAddressForChain(builder, chainType)) {
         return res.status(400).json({
           error: "Invalid address format",
-          message: "builder must be a valid Ethereum address"
+          message: chainType === "solana"
+            ? "builder must be a valid Solana address (base58)"
+            : "builder must be a valid Ethereum address (0x...)"
         })
       }
 
@@ -853,12 +932,15 @@ app.post('/api/register', async (req, res) => {
       })
     }
 
-    // Validate address format
-    const addressRegex = /^0x[a-fA-F0-9]{40}$/i
-    if (!addressRegex.test(tokenAddress) || !addressRegex.test(builder) || !addressRegex.test(paymentToken)) {
+    // Validate address format based on chain type
+    if (!isValidAddressForChain(tokenAddress, chainType) ||
+        !isValidAddressForChain(builder, chainType) ||
+        (paymentToken && !isValidAddressForChain(paymentToken, chainType))) {
       return res.status(400).json({
         error: "Invalid address format",
-        message: "tokenAddress, builder, and paymentToken must be valid Ethereum addresses"
+        message: chainType === "solana"
+          ? "tokenAddress, builder, and paymentToken must be valid Solana addresses (base58)"
+          : "tokenAddress, builder, and paymentToken must be valid Ethereum addresses (0x...)"
       })
     }
 
@@ -1008,14 +1090,19 @@ app.post('/api/register', async (req, res) => {
     }
 
     // Create token entry
+    // For Solana, addresses are case-sensitive base58, so don't lowercase
+    // For EVM, addresses should be lowercased
+    const normalizeAddress = (addr: string) => chainType === "solana" ? addr : addr.toLowerCase()
+
     const tokenEntry: IAOTokenDBEntry = {
-      id: tokenAddress.toLowerCase(),
+      id: normalizeAddress(tokenAddress),
       slug: finalServerSlug,
       name,
       symbol,
       apis: apiEntries,
-      builder: builder.toLowerCase(),
-      paymentToken: paymentToken.toLowerCase(),
+      builder: normalizeAddress(builder),
+      paymentToken: paymentToken ? normalizeAddress(paymentToken) : "",
+      chainId,
       subscriptionCount: "0",
       refundCount: "0",
       fulfilledCount: "0",
@@ -1112,12 +1199,11 @@ app.post('/api/add-api', async (req, res) => {
       })
     }
 
-    // Validate address format
-    const addressRegex = /^0x[a-fA-F0-9]{40}$/i
-    if (!addressRegex.test(builder)) {
+    // Validate address format (accept both EVM and Solana addresses)
+    if (!isValidEvmAddress(builder) && !isValidSolanaAddress(builder)) {
       return res.status(400).json({
         error: "Invalid address format",
-        message: "builder must be a valid Ethereum address"
+        message: "builder must be a valid address (Ethereum 0x... or Solana base58)"
       })
     }
 
@@ -1277,6 +1363,8 @@ app.get('/api/server/:slug', async (req, res) => {
         tags: tokenEntry.tags || [],
         apis: tokenEntry.apis ? sanitizeApisForPublic(tokenEntry.apis) : [],
         apiCount: tokenEntry.apis?.length || 0,
+        chainId: tokenEntry.chainId,
+        chainType: tokenEntry.chainId ? getChainTypeFromId(tokenEntry.chainId) : "evm",
       }
     })
   } catch (error: any) {
@@ -1284,6 +1372,44 @@ app.get('/api/server/:slug', async (req, res) => {
     return res.status(500).json({
       error: "Internal server error",
       message: error.message || "Failed to fetch server"
+    })
+  }
+})
+
+/**
+ * GET /api/chains - Get all available chain configurations
+ * Returns chain configs for frontend chain selection
+ */
+app.get('/api/chains', async (_req, res) => {
+  try {
+    if (!chainConfigService) {
+      // Fallback to default configs if service not initialized
+      return res.json({
+        success: true,
+        chains: DEFAULT_CHAIN_CONFIGS
+      })
+    }
+
+    const chains = await chainConfigService.getAllChains()
+
+    // If no chains in DB, return defaults
+    if (chains.length === 0) {
+      return res.json({
+        success: true,
+        chains: DEFAULT_CHAIN_CONFIGS
+      })
+    }
+
+    return res.json({
+      success: true,
+      chains
+    })
+  } catch (error: any) {
+    console.error("❌ Failed to get chains:", error)
+    // Fallback to defaults on error
+    return res.json({
+      success: true,
+      chains: DEFAULT_CHAIN_CONFIGS
     })
   }
 })
@@ -1301,7 +1427,16 @@ app.get('/api/servers', async (req, res) => {
       })
     }
 
-    const tokens = await dynamoDBService.scanAllItems()
+    // Get chainId filter from query params (optional)
+    const chainIdFilter = req.query.chainId as string | undefined;
+
+    let tokens = await dynamoDBService.scanAllItems()
+
+    // Filter by chainId if provided
+    if (chainIdFilter) {
+      tokens = tokens.filter(token => token.chainId === chainIdFilter);
+    }
+
     // Sanitize tokens to hide builder endpoints
     const sanitizedServers = tokens.map(token => ({
       id: token.id,
@@ -1314,6 +1449,8 @@ app.get('/api/servers', async (req, res) => {
       tags: token.tags || [],
       apis: token.apis ? sanitizeApisForPublic(token.apis) : [],
       apiCount: token.apis?.length || 0,
+      chainId: token.chainId,
+      chainType: token.chainId ? getChainTypeFromId(token.chainId) : "evm",
       createdAt: token.createdAt,
       updatedAt: token.updatedAt,
     }))
@@ -1426,23 +1563,69 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
     }
 
     // Get contract metrics (bonding progress, token distribution)
+    // Skip for Solana tokens - they don't use EVM contracts
     let contractMetrics = null
     let paymentTokenPrice: bigint | null = null
     let paymentTokenDecimals: number | null = null
-    
-    try {
+
+    // Determine chain type from stored chainId or address format
+    const tokenChainType = tokenEntry.chainId
+      ? getChainTypeFromId(tokenEntry.chainId)
+      : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
+
+    // Only fetch EVM contract metrics for EVM tokens
+    if (tokenChainType === "solana") {
+      console.log(`⏭️  Solana bonding metrics for: ${tokenEntry.id}`)
+
+      // Solana bonding progress will be updated by automation when tokens are minted
+      // For now, return placeholder values - actual progress comes from on-chain Solana program
+      // TODO: Read totalTokensDistributed from Solana IAO program when available
+
+      // Graduation threshold in tokens (625M tokens with 18 decimals) - matches EVM
+      const tokenGraduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
+
+      // Placeholder: bonding progress will be updated when automation mints tokens
+      // The Solana program tracks totalTokensDistributed on-chain
+      const totalTokensDistributed = BigInt("0") // Will be read from Solana program
+      const bondingProgress = 0 // Will be calculated from on-chain data
+
+      const isGraduated = false
+
+      // Set payment token info for Solana (used for tokensPerCall calculation)
+      // Match EVM behavior: $0.01 fee → 250 tokens
+      // Formula: tokensPerCall = (fee * paymentTokenPrice) / 10^decimals
+      // 250 * 1e18 = (10,000 * paymentTokenPrice) / 1e6
+      // paymentTokenPrice = 25e21
+      paymentTokenPrice = BigInt("25000000000000000000000") // 25e21 - matches EVM pricing
+      paymentTokenDecimals = 6 // USDC has 6 decimals
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: tokenGraduationThreshold.toString(),
+        totalTokensDistributed: totalTokensDistributed.toString(),
+        totalFeesCollected: "0", // Not tracked in DynamoDB - automation handles minting
+        bondingProgress,
+        isGraduated,
+        chainType: "solana",
+        paymentTokenPrice: paymentTokenPrice.toString(),
+        paymentTokenDecimals,
+        note: "Bonding progress updated when automation mints tokens",
+      }
+
+      console.log(`📊 Solana bonding metrics: awaiting automation to mint tokens`)
+    } else try {
       if (!thirdwebClient) {
         console.warn(`⚠️  Thirdweb client not initialized - cannot fetch contract metrics for ${tokenEntry.id}`)
         throw new Error("Thirdweb client not initialized")
       }
-      
+
       if (IAOTokenABI.length === 0) {
         console.warn(`⚠️  IAOToken ABI not loaded - cannot fetch contract metrics for ${tokenEntry.id}`)
         throw new Error("IAOToken ABI not loaded")
       }
-      
+
       console.log(`📊 Fetching contract metrics for token: ${tokenEntry.id}`)
-      
+
       const tokenContract = getContract({
         client: thirdwebClient,
         chain: baseSepolia,
@@ -1729,6 +1912,14 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
     console.log(`📡 Proxy request for server ${serverSlug}, API ${apiSlug}: ${api.name}`)
 
+    // Determine if this is a Solana server
+    const serverChainType = tokenEntry.chainId
+      ? getChainTypeFromId(tokenEntry.chainId)
+      : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
+    const isSolanaServer = serverChainType === "solana"
+
+    console.log(`📡 Server chain type: ${serverChainType} (chainId: ${tokenEntry.chainId || 'not set'})`)
+
     // Get payment data from header (x402 V2: PAYMENT-SIGNATURE, fallback to X-PAYMENT for V1 compatibility)
     const paymentData = (req.headers['payment-signature'] || req.headers['x-payment']) as string | undefined
     
@@ -1754,14 +1945,20 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           timestamp: new Date().toISOString()
         })
         
+        // Determine network format based on chain type
+        const networkFormat = isSolanaServer
+          ? "solana:devnet"
+          : `eip155:${baseSepolia.id}`
+
         return res.status(402).json({
           error: "Payment required",
           message: "This endpoint requires payment. Please provide PAYMENT-SIGNATURE header (x402 V2).",
           x402Version: 2,
+          chainType: serverChainType,
           accepts: [{
             scheme: "exact",
-            network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
-            payTo: facilitatorAddress,  // User pays to FACILITATOR
+            network: networkFormat,
+            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,  // Solana pays directly to token
             asset: tokenEntry.paymentToken,
             maxAmountRequired: api.fee,
           }],
@@ -1775,31 +1972,88 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
       // Verify payment authorization BEFORE calling builder
       // User should have signed payment to facilitator address
       const facilitatorAddress = process.env.THIRDWEB_SERVER_WALLET_ADDRESS!
-      
-      console.log("📝 Verifying payment authorization...")
-      const verifyResult = await verifyPaymentAuthorization(
-        paymentData,
-        facilitatorAddress,
-        api.fee, // Use API-specific fee
-        tokenEntry.paymentToken
-      )
-      
-      if (!verifyResult.valid) {
-        console.error("❌ Payment authorization invalid:", verifyResult.error)
-        return res.status(402).json({
-          error: "Invalid payment authorization",
-          message: verifyResult.error || "Payment authorization is invalid",
-          x402Version: 2,
-          accepts: [{
-            scheme: "exact",
-            network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
-            payTo: tokenEntry.id,
-            asset: tokenEntry.paymentToken,
-            maxAmountRequired: api.fee,
-          }],
-        })
+
+      if (isSolanaServer) {
+        // Solana payment verification
+        console.log("📝 Verifying Solana payment authorization...")
+        try {
+          const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+          const paymentProof = JSON.parse(decoded)
+
+          // Basic validation for Solana payment - now expects signedTransaction
+          if (!paymentProof.payload?.signedTransaction || !paymentProof.payload?.authorization) {
+            throw new Error("Missing signedTransaction or authorization in payment proof")
+          }
+
+          // Check network is Solana
+          if (!paymentProof.network?.startsWith("solana")) {
+            throw new Error("Invalid network - expected Solana")
+          }
+
+          // Verify authorization contains required fields
+          const auth = paymentProof.payload.authorization
+          if (!auth.from || !auth.to || !auth.amount) {
+            throw new Error("Missing required authorization fields (from, to, amount)")
+          }
+
+          // Verify recipient matches server address
+          if (auth.to !== tokenEntry.id) {
+            throw new Error(`Payment recipient mismatch: expected ${tokenEntry.id}, got ${auth.to}`)
+          }
+
+          // Verify amount meets minimum fee
+          const paymentAmount = BigInt(auth.amount)
+          const requiredAmount = BigInt(api.fee)
+          if (paymentAmount < requiredAmount) {
+            throw new Error(`Insufficient payment: ${paymentAmount} < ${requiredAmount}`)
+          }
+
+          console.log("✅ Solana payment data verified:")
+          console.log(`   From: ${auth.from}`)
+          console.log(`   To: ${auth.to}`)
+          console.log(`   Amount: ${auth.amount}`)
+        } catch (solanaErr: any) {
+          console.error("❌ Solana payment validation failed:", solanaErr.message)
+          return res.status(402).json({
+            error: "Invalid payment authorization",
+            message: solanaErr.message || "Solana payment authorization is invalid",
+            x402Version: 2,
+            accepts: [{
+              scheme: "exact",
+              network: "solana:devnet",
+              payTo: tokenEntry.id,
+              asset: tokenEntry.paymentToken,
+              maxAmountRequired: api.fee,
+            }],
+          })
+        }
+      } else {
+        // EVM payment verification
+        console.log("📝 Verifying EVM payment authorization...")
+        const verifyResult = await verifyPaymentAuthorization(
+          paymentData,
+          facilitatorAddress,
+          api.fee, // Use API-specific fee
+          tokenEntry.paymentToken
+        )
+
+        if (!verifyResult.valid) {
+          console.error("❌ Payment authorization invalid:", verifyResult.error)
+          return res.status(402).json({
+            error: "Invalid payment authorization",
+            message: verifyResult.error || "Payment authorization is invalid",
+            x402Version: 2,
+            accepts: [{
+              scheme: "exact",
+              network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
+              payTo: tokenEntry.id,
+              asset: tokenEntry.paymentToken,
+              maxAmountRequired: api.fee,
+            }],
+          })
+        }
       }
-      
+
       console.log("✅ Payment authorization valid - will execute AFTER successful builder response")
     } else {
       console.warn("⚠️  Thirdweb client not configured - skipping payment verification")
@@ -2053,61 +2307,183 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     
     if (thirdwebClient && paymentData) {
       try {
-        console.log("Executing payment transfer:", {
-          payTo: tokenEntry.id,
-          amount: api.fee, // Use API-specific fee
-          paymentToken: tokenEntry.paymentToken,
-          serverSlug,
-          apiSlug,
-        })
-        
-        const paymentResult = await executePaymentTransfer(
-          paymentData,
-          tokenEntry.paymentToken,
-          req,
-          tokenEntry.id,
-          api.fee, // Use API-specific fee
-          serverSlug,
-          apiSlug,
-          api.name
-        )
-        
-        if (!paymentResult.success) {
-          console.error("❌ Payment execution failed AFTER successful builder response")
-          console.error("Payment error:", paymentResult.error)
-    return res.status(500).json({
-            error: "Payment execution failed",
-            message: "Builder returned data successfully, but payment could not be executed.",
-            x402Version: 2,
-            paymentError: paymentResult.error,
-            data: parsedData,
+        // Solana payment settlement
+        if (isSolanaServer) {
+          console.log("💸 Processing Solana payment settlement...")
+
+          let solanaPaymentSuccess = false
+          let solanaTxSignature: string | null = null
+
+          try {
+            // Parse the payment proof
+            const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+            const paymentProof = JSON.parse(decoded)
+
+            // Get the signed transaction from the payload
+            const signedTransactionBase64 = paymentProof.payload?.signedTransaction
+            if (!signedTransactionBase64) {
+              throw new Error("Missing signed transaction in payment proof")
+            }
+
+            // Deserialize the signed transaction
+            const transactionBytes = Buffer.from(signedTransactionBase64, 'base64')
+            const transaction = Transaction.from(transactionBytes)
+
+            console.log("📝 Submitting signed Solana transaction...")
+            console.log(`   From: ${paymentProof.payload?.authorization?.from}`)
+            console.log(`   To: ${paymentProof.payload?.authorization?.to}`)
+            console.log(`   Amount: ${paymentProof.payload?.authorization?.amount}`)
+
+            // Connect to Solana devnet and submit the transaction
+            const connection = new Connection(SOLANA_DEVNET_RPC, "confirmed")
+
+            let signature: string
+            let isAlreadyProcessed = false
+
+            try {
+              // Send the raw signed transaction
+              signature = await connection.sendRawTransaction(
+                transaction.serialize(),
+                {
+                  skipPreflight: false,
+                  preflightCommitment: "confirmed",
+                }
+              )
+
+              console.log(`📤 Transaction submitted: ${signature}`)
+            } catch (sendErr: any) {
+              // Check if transaction was already processed
+              if (sendErr.message && sendErr.message.includes("already been processed")) {
+                console.log("⚠️  Transaction already processed, checking status...")
+                isAlreadyProcessed = true
+
+                // Extract signature from the transaction
+                signature = bs58.encode(transaction.signature!)
+
+                // Verify the transaction exists and succeeded
+                const txStatus = await connection.getSignatureStatus(signature)
+                if (!txStatus || !txStatus.value) {
+                  throw new Error("Transaction was marked as processed but status not found")
+                }
+
+                if (txStatus.value.err) {
+                  throw new Error(`Previously processed transaction failed: ${JSON.stringify(txStatus.value.err)}`)
+                }
+
+                console.log("✅ Transaction was already successfully processed")
+              } else {
+                throw sendErr
+              }
+            }
+
+            // Wait for confirmation if not already processed
+            if (!isAlreadyProcessed) {
+              const confirmation = await connection.confirmTransaction(signature, "confirmed")
+
+              if (confirmation.value.err) {
+                throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+              }
+            }
+
+            console.log("✅ Solana payment settled successfully!")
+            console.log(`   Signature: ${signature}`)
+            console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`)
+
+            solanaPaymentSuccess = true
+            solanaTxSignature = signature
+          } catch (solanaSettleErr: any) {
+            console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
+
+            // Return error to user - they were not charged
+            return res.status(500).json({
+              error: "Payment settlement failed",
+              message: "Builder returned data successfully, but Solana payment could not be executed.",
+              x402Version: 2,
+              paymentError: solanaSettleErr.message,
+              data: parsedData,
+              serverSlug,
+              apiSlug,
+              charged: false
+            })
+          }
+
+          // Record metrics for Solana
+          if (metricsService && solanaPaymentSuccess) {
+            const latencyMs = Date.now() - requestStartTime
+            metricsService.recordApiCall(
+              tokenEntry.id,
+              apiSlug,
+              api.fee,
+              true, // success
+              latencyMs
+            ).catch(err => {
+              console.error("⚠️  Failed to record metrics:", err)
+            })
+          }
+        } else {
+          // EVM payment settlement via Thirdweb
+          console.log("Executing EVM payment transfer:", {
+            payTo: tokenEntry.id,
+            amount: api.fee, // Use API-specific fee
+            paymentToken: tokenEntry.paymentToken,
             serverSlug,
             apiSlug,
-            charged: false
           })
-        }
 
-        console.log("✅ Payment executed successfully:", paymentResult.txHash)
-
-        // Record metrics (latency, success, revenue)
-        if (metricsService) {
-          const latencyMs = Date.now() - requestStartTime
-          metricsService.recordApiCall(
+          const paymentResult = await executePaymentTransfer(
+            paymentData,
+            tokenEntry.paymentToken,
+            req,
             tokenEntry.id,
+            api.fee, // Use API-specific fee
+            serverSlug,
             apiSlug,
-            api.fee,
-            true, // success
-            latencyMs
-          ).catch(err => {
-            console.error("⚠️  Failed to record metrics:", err)
-          })
-        }
+            api.name
+          )
 
-        // STEP 4: Update subscription count and request queue
+          if (!paymentResult.success) {
+            console.error("❌ Payment execution failed AFTER successful builder response")
+            console.error("Payment error:", paymentResult.error)
+            return res.status(500).json({
+              error: "Payment execution failed",
+              message: "Builder returned data successfully, but payment could not be executed.",
+              x402Version: 2,
+              paymentError: paymentResult.error,
+              data: parsedData,
+              serverSlug,
+              apiSlug,
+              charged: false
+            })
+          }
+
+          console.log("✅ Payment executed successfully:", paymentResult.txHash)
+
+          // Record metrics for EVM (latency, success, revenue)
+          if (metricsService) {
+            const latencyMs = Date.now() - requestStartTime
+            metricsService.recordApiCall(
+              tokenEntry.id,
+              apiSlug,
+              api.fee,
+              true, // success
+              latencyMs
+            ).catch(err => {
+              console.error("⚠️  Failed to record metrics:", err)
+            })
+          }
+        } // end else (EVM payment)
+
+        // STEP 4: Update subscription count and request queue (for both Solana and EVM)
+        console.log(`📊 STEP 4: Updating subscription count and fees...`)
+        console.log(`   userRequestService initialized: ${!!userRequestService}`)
+        console.log(`   paymentData present: ${!!paymentData}`)
+
         if (userRequestService && paymentData) {
           try {
             const userAddress = extractUserAddressFromPayment(paymentData)
-            
+            console.log(`   Extracted userAddress: ${userAddress}`)
+            console.log(`   dynamoDBService initialized: ${!!dynamoDBService}`)
+
             if (userAddress && dynamoDBService) {
               const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
               if (tokenDBEntry) {
@@ -2122,6 +2498,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                 )
 
                 const newSubscriptionCount = (currentSubscriptionCount + BigInt(1)).toString()
+
                 const updatedTokenEntry: IAOTokenDBEntry = {
                   ...tokenDBEntry,
                   subscriptionCount: newSubscriptionCount,

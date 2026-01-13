@@ -45,9 +45,9 @@ export class AgentService {
     const config: any = { region }
 
     // Use local DynamoDB endpoint if configured (for development/testing)
-    // if (process.env.DYNAMODB_ENDPOINT) {
-    //   config.endpoint = process.env.DYNAMODB_ENDPOINT
-    // }
+    if (process.env.DYNAMODB_ENDPOINT) {
+      config.endpoint = process.env.DYNAMODB_ENDPOINT
+    }
 
     const client = new DynamoDBClient(config)
     this.docClient = DynamoDBDocumentClient.from(client)

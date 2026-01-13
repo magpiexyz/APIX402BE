@@ -86,3 +86,12 @@ aws dynamodb create-table --endpoint-url http://localhost:8000 \
     --key-schema AttributeName=id,KeyType=HASH \
     --global-secondary-indexes '[{"IndexName":"agentId-index","KeySchema":[{"AttributeName":"agentId","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}},{"IndexName":"sessionId-index","KeySchema":[{"AttributeName":"sessionId","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
     --billing-mode PAY_PER_REQUEST
+
+
+    aws dynamodb create-table \
+    --endpoint-url http://localhost:8000 \
+    --region us-east-1 \
+    --table-name apix-chain-configs \
+    --attribute-definitions AttributeName=chainId,AttributeType=S \
+    --key-schema AttributeName=chainId,KeyType=HASH \
+    --billing-mode PAY_PER_REQUEST
