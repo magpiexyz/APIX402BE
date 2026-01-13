@@ -148,7 +148,7 @@ if (!BUILDER_SECRET_PHRASE) {
 }
 
 // DynamoDB Service initialization
-const DYNAMODB_REGION = "us-east-1"
+const DYNAMODB_REGION = process.env.DYNAMODB_REGION || "us-west-1"
 const DYNAMODB_TABLE_NAME = "apix-iao-tokens"
 const USER_REQUEST_TABLE_NAME = "apix-iao-user-requests"
 const REQUEST_QUEUE_TABLE_NAME = "apix-iao-request-queue"
