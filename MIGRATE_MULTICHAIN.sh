@@ -4,7 +4,7 @@
 # This script migrates existing DynamoDB tables to support multi-chain architecture
 # Run this AFTER existing tables are created but BEFORE deploying new code
 
-REGION=${DYNAMODB_REGION:-us-east-1}
+REGION=${DYNAMODB_REGION:-us-west-1}
 ENDPOINT=${DYNAMODB_ENDPOINT:-""}
 
 if [ -n "$ENDPOINT" ]; then
