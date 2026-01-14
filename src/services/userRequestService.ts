@@ -22,9 +22,9 @@ function getDynamoDBDocClient(region: string): DynamoDBDocumentClient {
 }
 
 export interface UserRequestDBEntry {
-  id: string; // Composite key: `${iaoToken}#${from}` (lowercase)
-  iaoToken: string; // Token address (lowercase)
-  from: string; // User address (lowercase)
+  id: string; // Composite key: `${iaoToken}#${from}` (lowercase for EVM, original for Solana)
+  iaoToken: string; // Token address (lowercase for EVM, original for Solana)
+  from: string; // User address (lowercase for EVM, original for Solana)
   totalRequest: string; // BigInt as string
   fulfilledRequest: string; // BigInt as string
   refundRequest: string; // BigInt as string
@@ -33,13 +33,25 @@ export interface UserRequestDBEntry {
 }
 
 export interface RequestQueueDBEntry {
-  id: string; // Unique identifier: `${iaoToken}#${from}#${userRequestNumber}` (lowercase)
-  iaoToken: string; // Token address (lowercase)
-  from: string; // User address (lowercase)
+  id: string; // Unique identifier: `${iaoToken}#${from}#${userRequestNumber}`
+  iaoToken: string; // Token address (lowercase for EVM, original for Solana)
+  from: string; // User address (lowercase for EVM, original for Solana)
   userRequestNumber: string; // BigInt as string
   globalRequestNumber: string; // BigInt as string
   fee: string; // Fee paid by user in payment token wei (e.g., "10000" for $0.01)
   createdAt: string; // ISO timestamp
+}
+
+/**
+ * Normalize address based on type
+ * EVM addresses (0x...) are lowercased for consistency
+ * Solana addresses (base58) are kept original because base58 is case-sensitive
+ */
+function normalizeAddress(address: string): string {
+  if (address.startsWith('0x')) {
+    return address.toLowerCase(); // EVM address
+  }
+  return address; // Solana address - keep original case
 }
 
 class UserRequestService {
@@ -57,7 +69,9 @@ class UserRequestService {
    * Get or create a user request
    */
   async getOrCreateUserRequest(iaoToken: string, from: string): Promise<UserRequestDBEntry> {
-    const id = `${iaoToken.toLowerCase()}#${from.toLowerCase()}`;
+    const normalizedToken = normalizeAddress(iaoToken);
+    const normalizedFrom = normalizeAddress(from);
+    const id = `${normalizedToken}#${normalizedFrom}`;
     const params = {
       TableName: this.userRequestTableName,
       Key: { id },
@@ -73,8 +87,8 @@ class UserRequestService {
       const now = new Date().toISOString();
       const newUserRequest: UserRequestDBEntry = {
         id,
-        iaoToken: iaoToken.toLowerCase(),
-        from: from.toLowerCase(),
+        iaoToken: normalizedToken,
+        from: normalizedFrom,
         totalRequest: "0",
         fulfilledRequest: "0",
         refundRequest: "0",
@@ -123,11 +137,13 @@ class UserRequestService {
       }));
 
       // Create request queue entry
-      const queueId = `${iaoToken.toLowerCase()}#${from.toLowerCase()}#${userRequestNumber}`;
+      const normalizedToken = normalizeAddress(iaoToken);
+      const normalizedFrom = normalizeAddress(from);
+      const queueId = `${normalizedToken}#${normalizedFrom}#${userRequestNumber}`;
       const requestQueueEntry: RequestQueueDBEntry = {
         id: queueId,
-        iaoToken: iaoToken.toLowerCase(),
-        from: from.toLowerCase(),
+        iaoToken: normalizedToken,
+        from: normalizedFrom,
         userRequestNumber,
         globalRequestNumber,
         fee,
