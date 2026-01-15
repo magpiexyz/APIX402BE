@@ -826,7 +826,7 @@ app.post('/api/register', async (req, res) => {
         // Validate API endpoint returns 200 status code
         try {
           const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+          const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
           
           const response = await fetch(api.apiUrl, {
             method: 'GET',
@@ -849,7 +849,7 @@ app.post('/api/register', async (req, res) => {
           if (fetchError.name === 'AbortError') {
             return res.status(400).json({
               error: "API endpoint timeout",
-              message: `API at index ${i} (${api.apiUrl}) did not respond within 10 seconds. Please ensure your API endpoint is accessible.`
+              message: `API at index ${i} (${api.apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
             })
           }
           
@@ -1045,7 +1045,7 @@ app.post('/api/register', async (req, res) => {
       // Validate API endpoint returns 200 status code (only in registration mode)
       try {
         const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
         
         const response = await fetch(api.apiUrl, {
           method: 'GET',
@@ -1068,7 +1068,7 @@ app.post('/api/register', async (req, res) => {
         if (fetchError.name === 'AbortError') {
           return res.status(400).json({
             error: "API endpoint timeout",
-            message: `API at index ${i} (${api.apiUrl}) did not respond within 10 seconds. Please ensure your API endpoint is accessible.`
+            message: `API at index ${i} (${api.apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
           })
         }
         
@@ -1220,7 +1220,7 @@ app.post('/api/add-api', async (req, res) => {
     // Validate API endpoint returns 200 status code
     try {
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
       
       const response = await fetch(apiUrl, {
         method: 'GET',
@@ -1243,7 +1243,7 @@ app.post('/api/add-api', async (req, res) => {
       if (fetchError.name === 'AbortError') {
         return res.status(400).json({
           error: "API endpoint timeout",
-          message: `API endpoint (${apiUrl}) did not respond within 10 seconds. Please ensure your API endpoint is accessible.`
+          message: `API endpoint (${apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
         })
       }
       
