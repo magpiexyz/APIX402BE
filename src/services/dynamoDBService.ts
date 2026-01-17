@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 let dynamoDBClient: DynamoDBClient | null = null;
 let dynamoDBDocClient: DynamoDBDocumentClient | null = null;
@@ -206,9 +206,47 @@ class DynamoDBService {
   }
 
   /**
-   * Get a token by its slug
+   * Get a token by its slug using GSI for O(1) lookup
+   * Falls back to Scan if GSI doesn't exist (backwards compatible)
    */
   async getItemBySlug(slug: string): Promise<IAOTokenDBEntry | null> {
+    const normalizedSlug = slug.toLowerCase();
+
+    // Try GSI query first (O(1) lookup)
+    try {
+      const queryParams = {
+        TableName: this.tableName,
+        IndexName: "slug-index",
+        KeyConditionExpression: "#slug = :slug",
+        ExpressionAttributeNames: {
+          "#slug": "slug"
+        },
+        ExpressionAttributeValues: {
+          ":slug": normalizedSlug
+        }
+      };
+
+      const data = await this.ddbDocClient.send(new QueryCommand(queryParams));
+      const items = data.Items as IAOTokenDBEntry[];
+      if (items && items.length > 0) {
+        return items[0];
+      }
+      return null;
+    } catch (err: any) {
+      // If GSI doesn't exist, fall back to Scan
+      if (err.name === 'ValidationException' && err.message?.includes('slug-index')) {
+        console.warn(`⚠️ GSI slug-index not found, falling back to Scan for slug: ${slug}`);
+        return this.getItemBySlugFallback(normalizedSlug);
+      }
+      console.error(`❌ DynamoDB getItemBySlug fail for ${slug}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Fallback method using Scan (for backwards compatibility when GSI doesn't exist)
+   */
+  private async getItemBySlugFallback(slug: string): Promise<IAOTokenDBEntry | null> {
     const params = {
       TableName: this.tableName,
       FilterExpression: "#slug = :slug",
@@ -216,7 +254,7 @@ class DynamoDBService {
         "#slug": "slug"
       },
       ExpressionAttributeValues: {
-        ":slug": slug.toLowerCase()
+        ":slug": slug
       }
     };
 
@@ -225,7 +263,7 @@ class DynamoDBService {
       const items = data.Items as IAOTokenDBEntry[];
       return items && items.length > 0 ? items[0] : null;
     } catch (err) {
-      console.error(`❌ DynamoDB getItemBySlug fail for ${slug}:`, err);
+      console.error(`❌ DynamoDB getItemBySlugFallback fail for ${slug}:`, err);
       return null;
     }
   }
