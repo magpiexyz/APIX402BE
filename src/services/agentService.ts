@@ -15,6 +15,7 @@ export interface Agent {
   id: string
   name: string
   description: string
+  systemInstructions?: string // Custom system instructions for the agent
   creator: string // Wallet address
   llmProvider: 'claude' | 'gpt' | 'gemini'
   availableTools: string[] // Array of "{serverSlug}/{apiSlug}"
@@ -30,6 +31,7 @@ export interface Agent {
 export interface CreateAgentParams {
   name: string
   description: string
+  systemInstructions?: string // Custom system instructions for the agent
   creator: string
   llmProvider: 'claude' | 'gpt' | 'gemini'
   availableTools: string[]
@@ -63,6 +65,7 @@ export class AgentService {
       id: uuidv4(),
       name: params.name,
       description: params.description,
+      systemInstructions: params.systemInstructions || undefined,
       creator: params.creator.toLowerCase(),
       llmProvider: params.llmProvider,
       availableTools: params.availableTools,

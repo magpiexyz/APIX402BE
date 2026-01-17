@@ -37,6 +37,117 @@ export interface ToolExecutionResult {
   success: boolean
   result?: any
   error?: string
+  async?: boolean  // True if result came from async polling
+  estimatedTime?: number  // Estimated seconds for async operations
+}
+
+// Interface for async job responses from APIs that return 202
+export interface AsyncJobResponse {
+  status?: 'processing' | 'pending' | 'completed' | 'failed' | 'error'
+  statusUrl?: string
+  status_url?: string  // Alternative naming convention
+  jobId?: string
+  job_id?: string      // Alternative naming convention
+  estimatedTime?: number
+  estimated_time?: number  // Alternative naming convention
+  result?: any
+  error?: string
+  message?: string
+}
+
+// Configuration for async polling
+const ASYNC_POLLING_CONFIG = {
+  pollIntervalMs: 5000,        // 5 seconds between polls
+  maxDurationMs: 5 * 60 * 1000, // 5 minutes max
+  maxAttempts: 60,              // Max poll attempts
+}
+
+/**
+ * Simple delay helper
+ */
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Poll a status URL until the async job completes or times out
+ */
+async function pollForResult(
+  statusUrl: string,
+  baseUrl: string,
+  maxDurationMs: number = ASYNC_POLLING_CONFIG.maxDurationMs
+): Promise<{ success: boolean; result?: any; error?: string }> {
+  const startTime = Date.now()
+  let attempts = 0
+
+  // Resolve relative URL to absolute
+  const fullStatusUrl = statusUrl.startsWith('http')
+    ? statusUrl
+    : new URL(statusUrl, baseUrl).toString()
+
+  console.log(`⏳ Starting async polling for: ${fullStatusUrl}`)
+
+  while (Date.now() - startTime < maxDurationMs && attempts < ASYNC_POLLING_CONFIG.maxAttempts) {
+    attempts++
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000) // 30 second timeout per poll
+
+      const response = await fetch(fullStatusUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeout)
+
+      if (response.status === 200) {
+        // Job might be completed
+        const data = await response.json() as AsyncJobResponse
+
+        // Check if still processing (some APIs return 200 with status field)
+        if (data.status === 'processing' || data.status === 'pending') {
+          console.log(`⏳ Poll attempt ${attempts}: Still processing...`)
+          await delay(ASYNC_POLLING_CONFIG.pollIntervalMs)
+          continue
+        }
+
+        // Check for failure status
+        if (data.status === 'failed' || data.status === 'error') {
+          return { success: false, error: data.error || data.message || 'Job failed' }
+        }
+
+        // Success - return result
+        console.log(`✅ Async job completed after ${attempts} polls`)
+        return { success: true, result: data.result || data }
+      }
+
+      if (response.status === 202) {
+        // Still processing, continue polling
+        console.log(`⏳ Poll attempt ${attempts}: Status 202, continuing...`)
+        await delay(ASYNC_POLLING_CONFIG.pollIntervalMs)
+        continue
+      }
+
+      // Non-2xx status = error
+      const errorText = await response.text()
+      return { success: false, error: `Status check returned ${response.status}: ${errorText}` }
+
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.warn(`⚠️ Poll attempt ${attempts} timed out, retrying...`)
+      } else {
+        console.error(`⚠️ Polling error (attempt ${attempts}):`, error.message)
+      }
+      // On network error or timeout, wait and retry
+      await delay(ASYNC_POLLING_CONFIG.pollIntervalMs)
+    }
+  }
+
+  // Timeout
+  const elapsedSeconds = Math.round((Date.now() - startTime) / 1000)
+  return { success: false, error: `Async operation timed out after ${elapsedSeconds} seconds (${attempts} attempts)` }
 }
 
 export class AgentToolService {
@@ -229,6 +340,47 @@ export class AgentToolService {
       })
 
       clearTimeout(timeout)
+
+      // Handle 202 Accepted - async job started
+      if (response.status === 202) {
+        console.log(`⏳ API returned 202 Accepted - starting async polling...`)
+
+        let asyncResponse: AsyncJobResponse
+        try {
+          asyncResponse = await response.json() as AsyncJobResponse
+        } catch {
+          asyncResponse = {}
+        }
+
+        // Get status URL from response body or Location header
+        const statusUrl = asyncResponse.statusUrl
+          || asyncResponse.status_url
+          || response.headers.get('Location')
+
+        if (!statusUrl) {
+          throw new Error('API returned 202 but no status URL provided. The API should include a statusUrl in the response body or a Location header.')
+        }
+
+        // Get estimated time if provided
+        const estimatedTime = asyncResponse.estimatedTime || asyncResponse.estimated_time
+
+        console.log(`⏳ Async job started, polling ${statusUrl}${estimatedTime ? ` (estimated: ${estimatedTime}s)` : ''}...`)
+
+        // Poll for result
+        const pollResult = await pollForResult(statusUrl, `${apiUrl}${queryParam}`)
+
+        if (!pollResult.success) {
+          throw new Error(pollResult.error || 'Async operation failed')
+        }
+
+        return {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          success: true,
+          result: pollResult.result,
+          async: true
+        }
+      }
 
       if (!response.ok) {
         const errorData = await response.text()
