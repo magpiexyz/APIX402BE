@@ -2165,25 +2165,44 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           ? "solana:devnet"
           : `eip155:${baseSepolia.id}`
 
+        // Build the full x402 V2 response
+        const baseUrl = `${req.protocol}://${req.get('host')}`
+        const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
+
         return res.status(402).json({
-          error: "Payment required",
-          message: "This endpoint requires payment. Please provide PAYMENT-SIGNATURE header (x402 V2).",
           x402Version: 2,
-          chainType: serverChainType,
+          error: "Payment required",
           accepts: [{
             scheme: "exact",
             network: networkFormat,
-            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,  // Solana pays directly to token
+            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,
             asset: tokenEntry.paymentToken,
             amount: api.fee,
-            maxAmountRequired: api.fee,
-            maxTimeoutSeconds: 300,  // 5 minute timeout
-            extra: {},
+            maxTimeoutSeconds: 300,
+            extra: {
+              finalRecipient: tokenEntry.id,
+              serverSlug: serverSlug,
+              apiSlug: apiSlug,
+            },
           }],
-          // Include final recipient for reference
-          finalRecipient: tokenEntry.id,
-          serverSlug: serverSlug,
-          apiSlug: apiSlug,
+          resource: {
+            url: resourceUrl,
+            description: api.description || `${tokenEntry.name} - ${api.name}`,
+            mimeType: "application/json",
+          },
+          extensions: {
+            bazaar: {
+              info: {
+                input: {},
+                output: { success: true, data: {} },
+              },
+              schema: {
+                type: "object",
+                properties: {},
+                required: [],
+              },
+            },
+          },
         })
       }
       
@@ -2232,20 +2251,31 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           console.log(`   Amount: ${auth.amount}`)
         } catch (solanaErr: any) {
           console.error("❌ Solana payment validation failed:", solanaErr.message)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
           return res.status(402).json({
-            error: "Invalid payment authorization",
-            message: solanaErr.message || "Solana payment authorization is invalid",
             x402Version: 2,
+            error: solanaErr.message || "Solana payment authorization is invalid",
             accepts: [{
               scheme: "exact",
               network: "solana:devnet",
               payTo: tokenEntry.id,
               asset: tokenEntry.paymentToken,
               amount: api.fee,
-              maxAmountRequired: api.fee,
               maxTimeoutSeconds: 300,
-              extra: {},
+              extra: { finalRecipient: tokenEntry.id },
             }],
+            resource: {
+              url: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              mimeType: "application/json",
+            },
+            extensions: {
+              bazaar: {
+                info: { input: {}, output: { success: true, data: {} } },
+                schema: { type: "object", properties: {}, required: [] },
+              },
+            },
           })
         }
       } else {
@@ -2260,20 +2290,31 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
         if (!verifyResult.valid) {
           console.error("❌ Payment authorization invalid:", verifyResult.error)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
           return res.status(402).json({
-            error: "Invalid payment authorization",
-            message: verifyResult.error || "Payment authorization is invalid",
             x402Version: 2,
+            error: verifyResult.error || "Payment authorization is invalid",
             accepts: [{
               scheme: "exact",
-              network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
-              payTo: tokenEntry.id,
+              network: `eip155:${baseSepolia.id}`,
+              payTo: facilitatorAddress,
               asset: tokenEntry.paymentToken,
               amount: api.fee,
-              maxAmountRequired: api.fee,
               maxTimeoutSeconds: 300,
-              extra: {},
+              extra: { finalRecipient: tokenEntry.id },
             }],
+            resource: {
+              url: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              mimeType: "application/json",
+            },
+            extensions: {
+              bazaar: {
+                info: { input: {}, output: { success: true, data: {} } },
+                schema: { type: "object", properties: {}, required: [] },
+              },
+            },
           })
         }
       }
