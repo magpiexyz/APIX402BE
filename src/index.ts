@@ -3161,6 +3161,15 @@ app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) =
   return handleApiProxyRequest(req, res, serverSlug, apiSlug)
 })
 
+// Handle POST requests for /api/:serverSlug/:apiSlug
+// Supports APIs that require JSON body input
+app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
 /**
  * CHAT ENDPOINTS
  */

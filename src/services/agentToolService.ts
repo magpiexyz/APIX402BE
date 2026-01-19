@@ -316,26 +316,46 @@ export class AgentToolService {
       // Build the API URL
       const apiUrl = `${this.backendUrl}/api/${serverSlug}/${apiSlug}`
 
-      // Get request parameters from tool input
-      // Support both raw query strings (e.g., "base=USD&date=2024-01-01") and already formatted params
+      // Determine HTTP method and request parameters
+      // Use POST with JSON body if 'body' is provided, otherwise GET with query string
+      let httpMethod = 'GET'
       let queryParam = ''
-      if (toolCall.input?.query) {
-        const query = toolCall.input.query.trim()
-        // If query already starts with '?', use as-is. Otherwise, add '?'
-        queryParam = query.startsWith('?') ? query : `?${query}`
-      }
+      let requestBody: string | undefined = undefined
 
-      console.log(`🌐 Calling API: ${apiUrl}${queryParam}`)
+      if (toolCall.input?.body) {
+        // POST request with JSON body
+        httpMethod = 'POST'
+        requestBody = typeof toolCall.input.body === 'string'
+          ? toolCall.input.body
+          : JSON.stringify(toolCall.input.body)
+        console.log(`🌐 Calling API (POST): ${apiUrl}`)
+        console.log(`📤 Request body: ${requestBody}`)
+      } else if (toolCall.input?.query) {
+        // GET request with query parameters
+        const query = toolCall.input.query.trim()
+        queryParam = query.startsWith('?') ? query : `?${query}`
+        console.log(`🌐 Calling API (GET): ${apiUrl}${queryParam}`)
+      } else if (toolCall.input && Object.keys(toolCall.input).length > 0) {
+        // If input has properties but no explicit body/query, use POST with input as body
+        httpMethod = 'POST'
+        requestBody = JSON.stringify(toolCall.input)
+        console.log(`🌐 Calling API (POST): ${apiUrl}`)
+        console.log(`📤 Request body: ${requestBody}`)
+      } else {
+        console.log(`🌐 Calling API (GET): ${apiUrl}`)
+      }
 
       // Call the IAO API with timeout
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
       const response = await fetch(`${apiUrl}${queryParam}`, {
-        method: 'GET',
+        method: httpMethod,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
+        body: requestBody,
         signal: controller.signal
       })
 
