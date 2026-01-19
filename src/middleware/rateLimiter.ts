@@ -215,8 +215,8 @@ export async function apiRateLimiter(
   }
 
   try {
-    const serverSlug = req.params.serverSlug || req.path.split('/')[2];
-    const apiSlug = req.params.apiSlug || req.path.split('/')[3];
+    const serverSlug = (req.params.serverSlug as string) || req.path.split('/')[2];
+    const apiSlug = (req.params.apiSlug as string) || req.path.split('/')[3];
 
     const result = await checkRateLimit(getApiKey(serverSlug, apiSlug), 'api');
 
@@ -250,8 +250,8 @@ export async function combinedApiRateLimiter(
 
   try {
     const ip = getClientIp(req);
-    const serverSlug = req.params.serverSlug || req.path.split('/')[2];
-    const apiSlug = req.params.apiSlug || req.path.split('/')[3];
+    const serverSlug = (req.params.serverSlug as string) || req.path.split('/')[2];
+    const apiSlug = (req.params.apiSlug as string) || req.path.split('/')[3];
     const paymentData = req.headers['payment-signature'] as string;
     const wallet = extractWalletFromPayment(paymentData);
 

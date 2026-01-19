@@ -2175,7 +2175,10 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
             network: networkFormat,
             payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,  // Solana pays directly to token
             asset: tokenEntry.paymentToken,
+            amount: api.fee,
             maxAmountRequired: api.fee,
+            maxTimeoutSeconds: 300,  // 5 minute timeout
+            extra: {},
           }],
           // Include final recipient for reference
           finalRecipient: tokenEntry.id,
@@ -2238,7 +2241,10 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
               network: "solana:devnet",
               payTo: tokenEntry.id,
               asset: tokenEntry.paymentToken,
+              amount: api.fee,
               maxAmountRequired: api.fee,
+              maxTimeoutSeconds: 300,
+              extra: {},
             }],
           })
         }
@@ -2263,7 +2269,10 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
               network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
               payTo: tokenEntry.id,
               asset: tokenEntry.paymentToken,
+              amount: api.fee,
               maxAmountRequired: api.fee,
+              maxTimeoutSeconds: 300,
+              extra: {},
             }],
           })
         }
@@ -3105,8 +3114,8 @@ app.get('/api/agents/:id/metrics', async (req, res) => {
 // NOTE: Must be defined AFTER all specific /api/* routes
 // Rate limiters: per-IP, per-wallet, per-API endpoint
 app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
-  const serverSlug = req.params.serverSlug.toLowerCase()
-  const apiSlug = req.params.apiSlug.toLowerCase()
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
 
   return handleApiProxyRequest(req, res, serverSlug, apiSlug)
 })
