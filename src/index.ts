@@ -23,6 +23,7 @@ import { AgentPaymentService } from './services/agentPaymentService.js'
 import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/chainConfigService.js'
 import { generateBuilderJWT } from './utils/jwtAuth.js'
 import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/cacheService.js'
+import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -69,6 +70,14 @@ app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 
 app.use(express.json())
+
+// Apply global rate limiter (excludes /health and /)
+app.use(globalRateLimiter)
+
+// Health check endpoint for load testing and monitoring
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() })
+})
 
 // Serve static files from public directory (built frontend)
 // Only serve static files if public directory exists (frontend has been built)
@@ -3094,7 +3103,8 @@ app.get('/api/agents/:id/metrics', async (req, res) => {
 
 // Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
 // NOTE: Must be defined AFTER all specific /api/* routes
-app.get('/api/:serverSlug/:apiSlug', async (req, res) => {
+// Rate limiters: per-IP, per-wallet, per-API endpoint
+app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
   const serverSlug = req.params.serverSlug.toLowerCase()
   const apiSlug = req.params.apiSlug.toLowerCase()
 
