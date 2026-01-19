@@ -1200,6 +1200,7 @@ app.post('/api/register', async (req, res) => {
         apiUrl: api.apiUrl,
         description: api.description,
         fee: api.fee,
+        method: api.method || 'GET',  // Default to GET if not specified
         createdAt: now,
       })
     }
@@ -1281,6 +1282,7 @@ app.post('/api/add-api', async (req, res) => {
       apiUrl,
       description,
       fee,
+      method = 'GET',  // Default to GET if not specified
       builder,
     } = req.body
 
@@ -1289,6 +1291,14 @@ app.post('/api/add-api', async (req, res) => {
       return res.status(400).json({
         error: "Missing required fields",
         message: "serverSlug, slug, name, apiUrl, description, fee, and builder are required"
+      })
+    }
+
+    // Validate method
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
       })
     }
 
@@ -1420,7 +1430,8 @@ app.post('/api/add-api', async (req, res) => {
       name,
       apiUrl,
       description,
-      fee
+      fee,
+      method as 'GET' | 'POST'
     )
 
     if (!newApi) {

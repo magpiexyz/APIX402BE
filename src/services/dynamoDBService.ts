@@ -75,6 +75,7 @@ export interface ApiEntry {
   apiUrl: string;       // Builder's API endpoint URL (hidden from public)
   description: string;  // Required description
   fee: string;          // Fee in payment token smallest unit (e.g., "10000" = $0.01 USDC with 6 decimals)
+  method?: 'GET' | 'POST';  // HTTP method (defaults to GET)
   createdAt: string;    // ISO timestamp when this API was added
 }
 
@@ -336,7 +337,7 @@ class DynamoDBService {
    * Add a new API to an existing token
    * The new API will be assigned the next available index
    */
-  async addApiToToken(tokenAddress: string, apiSlug: string, apiName: string, apiUrl: string, description: string, fee: string): Promise<ApiEntry | null> {
+  async addApiToToken(tokenAddress: string, apiSlug: string, apiName: string, apiUrl: string, description: string, fee: string, method: 'GET' | 'POST' = 'GET'): Promise<ApiEntry | null> {
     const token = await this.getItem(tokenAddress);
     if (!token) {
       console.error(`❌ Token ${tokenAddress} not found`);
@@ -345,16 +346,16 @@ class DynamoDBService {
 
     // Ensure apis array exists
     const apis = token.apis || [];
-    
+
     // Check if API slug already exists within this token
     if (apis.some(api => api.slug === apiSlug.toLowerCase())) {
       console.error(`❌ API slug ${apiSlug} already exists in token ${tokenAddress}`);
       return null;
     }
-    
+
     // Calculate next index
     const nextIndex = apis.length;
-    
+
     // Create new API entry
     const newApi: ApiEntry = {
       index: nextIndex,
@@ -363,6 +364,7 @@ class DynamoDBService {
       apiUrl: apiUrl,
       description: description,
       fee: fee,
+      method: method,
       createdAt: new Date().toISOString(),
     };
 

@@ -18,6 +18,7 @@ export interface ApiEntry {
   description?: string
   apiUrl?: string
   fee: string
+  method?: 'GET' | 'POST'  // HTTP method (defaults to GET)
   createdAt: string
 }
 
