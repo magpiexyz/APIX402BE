@@ -69,7 +69,7 @@ app.use(cors(corsOptions))
 // Handle preflight OPTIONS requests explicitly
 app.options('*', cors(corsOptions))
 
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))  // Increased for base64 image responses
 
 // Apply global rate limiter (excludes /health and /)
 app.use(globalRateLimiter)
