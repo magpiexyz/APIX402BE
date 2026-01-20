@@ -3162,25 +3162,6 @@ app.get('/api/agents/:id/metrics', async (req, res) => {
   }
 })
 
-// Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
-// NOTE: Must be defined AFTER all specific /api/* routes
-// Rate limiters: per-IP, per-wallet, per-API endpoint
-app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
-  const serverSlug = (req.params.serverSlug as string).toLowerCase()
-  const apiSlug = (req.params.apiSlug as string).toLowerCase()
-
-  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
-})
-
-// Handle POST requests for /api/:serverSlug/:apiSlug
-// Supports APIs that require JSON body input
-app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
-  const serverSlug = (req.params.serverSlug as string).toLowerCase()
-  const apiSlug = (req.params.apiSlug as string).toLowerCase()
-
-  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
-})
-
 /**
  * CHAT ENDPOINTS
  */
@@ -3893,6 +3874,30 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`)
     res.end()
   }
+})
+
+/**
+ * API PROXY ROUTES
+ * IMPORTANT: These wildcard routes MUST be defined AFTER all specific /api/* routes
+ * Otherwise they will catch requests meant for /api/chat/*, /api/agents/*, etc.
+ */
+
+// Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
+// Rate limiters: per-IP, per-wallet, per-API endpoint
+app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
+// Handle POST requests for /api/:serverSlug/:apiSlug
+// Supports APIs that require JSON body input
+app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
 })
 
 // Start server if running directly (not in Vercel)
