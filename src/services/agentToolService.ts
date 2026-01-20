@@ -337,16 +337,39 @@ export class AgentToolService {
       const serverSlug = toolNameParts[0]
       const apiSlug = toolNameParts.slice(1).join('_')
 
-      console.log(`🔧 Executing tool: ${toolCall.name} (${serverSlug}/${apiSlug})`)
+      console.log(`🔧 Executing tool: ${toolCall.name} (parsed: ${serverSlug}/${apiSlug})`)
 
       // Fetch API metadata to get the stored HTTP method
+      // NOTE: Tool names have hyphens replaced with underscores, so we need to match carefully
       const servers = await this.fetchAvailableServers()
-      const server = servers.find(s => s.slug.toLowerCase() === serverSlug.toLowerCase())
-      const api = server?.apis.find(a => a.slug.toLowerCase() === apiSlug.toLowerCase())
-      const storedMethod = api?.method || 'GET'
+
+      // Find server by matching the tool name pattern
+      let matchedServer: IaoServer | undefined
+      let matchedApi: ApiEntry | undefined
+
+      for (const server of servers) {
+        for (const api of server.apis) {
+          // Generate the expected tool name for this server/api combo
+          const expectedToolName = `call_${server.slug}_${api.slug}`.replace(/-/g, '_').toLowerCase()
+          if (expectedToolName === toolCall.name.toLowerCase()) {
+            matchedServer = server
+            matchedApi = api
+            console.log(`✅ Matched tool to: ${server.slug}/${api.slug}`)
+            break
+          }
+        }
+        if (matchedServer) break
+      }
+
+      const storedMethod = matchedApi?.method || 'GET'
+      console.log(`📋 API method from DB: ${storedMethod}`)
+
+      // Use matched slugs for the API URL (they have correct hyphens)
+      const actualServerSlug = matchedServer?.slug || serverSlug
+      const actualApiSlug = matchedApi?.slug || apiSlug
 
       // Build the API URL
-      const apiUrl = `${this.backendUrl}/api/${serverSlug}/${apiSlug}`
+      const apiUrl = `${this.backendUrl}/api/${actualServerSlug}/${actualApiSlug}`
 
       // Use the API's stored method, not inferred from input
       let httpMethod = storedMethod
