@@ -2678,6 +2678,9 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     // STEP 3: Builder succeeded - NOW execute the payment
     console.log("✅ Builder returned success - NOW executing payment to token address")
     
+    // Variable to capture transaction hash from payment (used in response)
+    let settledTxHash: string | undefined = undefined
+
     if (thirdwebClient && paymentData) {
       try {
         // Solana payment settlement
@@ -2764,6 +2767,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
             solanaPaymentSuccess = true
             solanaTxSignature = signature
+            settledTxHash = signature  // Capture for response
           } catch (solanaSettleErr: any) {
             console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
 
@@ -2818,6 +2822,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           }
 
           console.log("✅ Payment executed successfully:", paymentResult.txHash)
+          settledTxHash = paymentResult.txHash  // Capture for response
         } // end else (EVM payment)
 
         // STEP 4: Fire-and-forget post-payment processing
@@ -2904,7 +2909,9 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
         status: "paid",
         tokenAddress: tokenEntry.id,
         paymentToken: tokenEntry.paymentToken,
-        charged: true
+        charged: true,
+        // Include transaction hash if available (from EVM or Solana payment)
+        ...(settledTxHash && { txHash: settledTxHash })
       },
       proxy: {
         serverSlug: serverSlug,
