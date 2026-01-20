@@ -209,33 +209,58 @@ export class AgentToolService {
 
         // Create tool definition
         const toolName = `call_${serverSlug}_${apiSlug}`.replace(/-/g, '_').toLowerCase()
+        const httpMethod = api.method || 'GET'
+        const isPostApi = httpMethod === 'POST'
 
-        // Build comprehensive description including usage examples
-        let description = `${api.name || api.slug} - ${api.description || 'No description available'}`
+        // Build comprehensive description including usage examples and HTTP method
+        let description = `[${httpMethod}] ${api.name || api.slug} - ${api.description || 'No description available'}`
 
-        // Extract and highlight usage examples from description
-        const usageMatch = api.description?.match(/usage example[s]?:?\s*(.+)/i)
-        let queryDescription = 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
-
-        if (usageMatch) {
-          // Parse usage examples to help agent understand query params
-          const examples = usageMatch[1]
-          queryDescription = `Query parameters for the API call. Examples from docs: ${examples.slice(0, 200)}`
+        // Build input schema based on HTTP method
+        let inputSchema: {
+          type: 'object'
+          properties: Record<string, any>
+          required: string[]
         }
 
-        const tool: ToolDefinition = {
-          name: toolName,
-          description: `${description}\nFee: ${api.fee} wei`,
-          input_schema: {
-            type: 'object',
+        if (isPostApi) {
+          // POST API - needs a JSON body
+          inputSchema = {
+            type: 'object' as const,
+            properties: {
+              body: {
+                type: 'object',
+                description: 'JSON request body for this POST API. Ask the user what data they want to send if not specified.'
+              }
+            },
+            required: ['body'] as string[]
+          }
+          description += '\n⚠️ This is a POST API - you MUST ask the user for the request body/payload before calling.'
+        } else {
+          // GET API - uses query parameters
+          const usageMatch = api.description?.match(/usage example[s]?:?\s*(.+)/i)
+          let queryDescription = 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
+
+          if (usageMatch) {
+            const examples = usageMatch[1]
+            queryDescription = `Query parameters for the API call. Examples from docs: ${examples.slice(0, 200)}`
+          }
+
+          inputSchema = {
+            type: 'object' as const,
             properties: {
               query: {
                 type: 'string',
                 description: queryDescription
               }
             },
-            required: []
+            required: [] as string[]
           }
+        }
+
+        const tool: ToolDefinition = {
+          name: toolName,
+          description: `${description}\nFee: ${api.fee} wei`,
+          input_schema: inputSchema
         }
 
         tools.push(tool)
