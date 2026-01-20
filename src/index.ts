@@ -3478,7 +3478,8 @@ RULES:
 3. NEVER output raw XML, JSON, or function definitions to the user
 4. NEVER list tools with their technical names or schemas
 5. If a tool fails with 402 error, briefly explain the API requires payment
-6. Be natural - respond like a helpful assistant, not a technical manual`
+6. Be natural - respond like a helpful assistant, not a technical manual
+7. For POST APIs (marked with [POST]): ALWAYS ask the user for the request body/payload BEFORE calling. Never send empty or made-up data.`
 
     console.log(`🎮 Playground: Processing message with ${tools.length} tools`)
     console.log(`🔧 Tools passed to LLM:`, tools.map(t => t.name))
@@ -3784,7 +3785,7 @@ ${tools.length > 0 ? tools.map(t => {
 - When you use a tool, the system will automatically show a payment button
 - After the user pays and you get the data, analyze and present it clearly
 
-📋 USING QUERY PARAMETERS:
+📋 USING QUERY PARAMETERS (GET APIs):
 - Many APIs require query parameters (e.g., ?base=USD, ?latitude=52.52&longitude=13.41)
 - Check the tool's usage examples for required/optional parameters
 - Pass query params in the "query" field as a plain string (e.g., "base=USD" or "latitude=52.52&longitude=13.41")
@@ -3792,9 +3793,20 @@ ${tools.length > 0 ? tools.map(t => {
 - When users ask questions, identify which query params to use from the context
 - If required params are missing, ASK the user for them before calling the tool
 
-EXAMPLE:
+📮 USING POST APIs (CRITICAL):
+- Some tools are marked with [POST] in their description - these require a JSON request body
+- For POST APIs, you MUST ask the user what data they want to send BEFORE calling the tool
+- NEVER call a POST API with an empty body or made-up data
+- The "body" field is REQUIRED for POST APIs - always ask the user to provide it
+- Example: "This API requires a request body. What data would you like to send? Please provide it in JSON format, like: {\"key\": \"value\"}"
+
+EXAMPLE (GET):
 User: "What's the EUR to USD exchange rate?"
 You: [Call tool with query="base=EUR"] or ask "Which currency would you like to convert from?"
+
+EXAMPLE (POST):
+User: "Use the POST API"
+You: "This API requires a request body. What data would you like to send? Please provide it as JSON, for example: {\"title\": \"foo\", \"body\": \"bar\"}"
 
 🚫 WHAT NOT TO DO:
 - Don't show <functions>, <function>, or any XML/JSON to users
