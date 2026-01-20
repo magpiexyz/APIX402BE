@@ -278,15 +278,19 @@ class DynamoDBService {
   }
 
   /**
-   * Check if an API URL already exists globally across all servers
+   * Check if an API URL + method combination already exists globally across all servers
+   * Same URL with different methods (GET vs POST) is allowed
    * Returns the server slug and token address if found
    */
-  async apiUrlExists(apiUrl: string): Promise<{ exists: boolean; serverSlug?: string; tokenAddress?: string }> {
+  async apiUrlExists(apiUrl: string, method: 'GET' | 'POST' = 'GET'): Promise<{ exists: boolean; serverSlug?: string; tokenAddress?: string }> {
     try {
       const tokens = await this.scanAllItems();
       for (const token of tokens) {
         if (token.apis) {
-          const matchingApi = token.apis.find(api => api.apiUrl === apiUrl);
+          // Check for same URL AND same method
+          const matchingApi = token.apis.find(api =>
+            api.apiUrl === apiUrl && (api.method || 'GET') === method
+          );
           if (matchingApi) {
             return {
               exists: true,
@@ -304,20 +308,27 @@ class DynamoDBService {
   }
 
   /**
-   * Check if multiple API URLs exist globally
+   * Check if multiple API URL + method combinations exist globally
+   * Same URL with different methods (GET vs POST) is allowed
    * Returns array of duplicates found
    */
-  async checkApiUrlsDuplicate(apiUrls: string[]): Promise<{ url: string; serverSlug: string; tokenAddress: string }[]> {
+  async checkApiUrlsDuplicate(apis: { url: string; method: 'GET' | 'POST' }[]): Promise<{ url: string; method: string; serverSlug: string; tokenAddress: string }[]> {
     try {
       const tokens = await this.scanAllItems();
-      const duplicates: { url: string; serverSlug: string; tokenAddress: string }[] = [];
-      
+      const duplicates: { url: string; method: string; serverSlug: string; tokenAddress: string }[] = [];
+
       for (const token of tokens) {
         if (token.apis) {
-          for (const api of token.apis) {
-            if (apiUrls.includes(api.apiUrl)) {
+          for (const existingApi of token.apis) {
+            // Check if any of the new APIs match both URL and method
+            const matchingNew = apis.find(newApi =>
+              newApi.url === existingApi.apiUrl &&
+              newApi.method === (existingApi.method || 'GET')
+            );
+            if (matchingNew) {
               duplicates.push({
-                url: api.apiUrl,
+                url: existingApi.apiUrl,
+                method: existingApi.method || 'GET',
                 serverSlug: token.slug,
                 tokenAddress: token.id
               });
@@ -325,7 +336,7 @@ class DynamoDBService {
           }
         }
       }
-      
+
       return duplicates;
     } catch (err) {
       console.error(`❌ DynamoDB checkApiUrlsDuplicate error:`, err);

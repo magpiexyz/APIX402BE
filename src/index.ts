@@ -879,7 +879,7 @@ app.post('/api/register', async (req, res) => {
 
 
       // Validate API fields and check for duplicates
-      const apiUrls: string[] = []
+      const apiUrlsWithMethods: { url: string; method: 'GET' | 'POST' }[] = []
       const apiSlugs = new Set<string>()
 
       for (let i = 0; i < apis.length; i++) {
@@ -930,7 +930,7 @@ app.post('/api/register', async (req, res) => {
         // Validate URL format
         try {
           new URL(api.apiUrl)
-          apiUrls.push(api.apiUrl)
+          apiUrlsWithMethods.push({ url: api.apiUrl, method: api.method || 'GET' })
         } catch {
           return res.status(400).json({
             error: "Invalid API URL",
@@ -975,14 +975,16 @@ app.post('/api/register', async (req, res) => {
         }
       }
 
-      // Check if any API URLs are already registered globally
-      const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrls)
+      // Check if any API URL + method combinations are already registered globally
+      // Same URL with different methods (GET vs POST) is allowed
+      const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
       if (duplicateApis.length > 0) {
         return res.status(409).json({
           error: "Duplicate API URL(s)",
-          message: `The following API endpoint(s) are already registered: ${duplicateApis.map(d => d.url).join(', ')}`,
+          message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
           duplicates: duplicateApis.map(d => ({
             url: d.url,
+            method: d.method,
             registeredOn: d.serverSlug
           }))
         })
@@ -1090,15 +1092,19 @@ app.post('/api/register', async (req, res) => {
       })
     }
 
-    // Check if any API URLs are already registered globally
-    const apiUrls = apis.map((api: any) => api.apiUrl).filter((url: string) => url)
-    const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrls)
+    // Check if any API URL + method combinations are already registered globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const apiUrlsWithMethods = apis
+      .filter((api: any) => api.apiUrl)
+      .map((api: any) => ({ url: api.apiUrl, method: (api.method || 'GET') as 'GET' | 'POST' }))
+    const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
     if (duplicateApis.length > 0) {
       return res.status(409).json({
         error: "Duplicate API URL(s)",
-        message: `The following API endpoint(s) are already registered: ${duplicateApis.map(d => d.url).join(', ')}`,
+        message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
         duplicates: duplicateApis.map(d => ({
           url: d.url,
+          method: d.method,
           registeredOn: d.serverSlug
         }))
       })
@@ -1414,12 +1420,13 @@ app.post('/api/add-api', async (req, res) => {
       })
     }
 
-    // Check if API URL already exists globally
-    const existingApiUrl = await dynamoDBService.apiUrlExists(apiUrl)
+    // Check if API URL + method combination already exists globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const existingApiUrl = await dynamoDBService.apiUrlExists(apiUrl, method as 'GET' | 'POST')
     if (existingApiUrl.exists) {
       return res.status(409).json({
         error: "Duplicate API URL",
-        message: `This API endpoint is already registered on server "${existingApiUrl.serverSlug}".`
+        message: `This API endpoint with ${method} method is already registered on server "${existingApiUrl.serverSlug}".`
       })
     }
 
