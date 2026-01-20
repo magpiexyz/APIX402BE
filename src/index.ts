@@ -751,14 +751,22 @@ async function executePaymentTransfer(
     console.log('📊 settlePayment result:', {
       status: paymentResult.status,
       hasPaymentReceipt: paymentResult.status === 200 && !!paymentResult.paymentReceipt,
+      paymentReceiptKeys: paymentResult.status === 200 ? Object.keys(paymentResult.paymentReceipt || {}) : [],
+      paymentReceipt: paymentResult.status === 200 ? JSON.stringify(paymentResult.paymentReceipt, null, 2) : null,
       timestamp: new Date().toISOString()
     })
     
     if (paymentResult.status === 200) {
       console.log('✅ Payment settled successfully!')
-      return { 
-        success: true, 
-        txHash: paymentResult.paymentReceipt?.transaction,
+      // Try multiple possible property names for on-chain transaction hash
+      const receipt = paymentResult.paymentReceipt as Record<string, any> || {}
+      const txHash = receipt.transactionHash  // Preferred: actual on-chain hash
+        || receipt.txHash
+        || receipt.hash
+        || (typeof receipt.transaction === 'string' && receipt.transaction.startsWith('0x') ? receipt.transaction : undefined)
+      return {
+        success: true,
+        txHash,
         paymentReceipt: paymentResult.paymentReceipt
       }
     } else {
