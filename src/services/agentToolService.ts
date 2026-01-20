@@ -339,36 +339,42 @@ export class AgentToolService {
 
       console.log(`🔧 Executing tool: ${toolCall.name} (${serverSlug}/${apiSlug})`)
 
+      // Fetch API metadata to get the stored HTTP method
+      const servers = await this.fetchAvailableServers()
+      const server = servers.find(s => s.slug.toLowerCase() === serverSlug.toLowerCase())
+      const api = server?.apis.find(a => a.slug.toLowerCase() === apiSlug.toLowerCase())
+      const storedMethod = api?.method || 'GET'
+
       // Build the API URL
       const apiUrl = `${this.backendUrl}/api/${serverSlug}/${apiSlug}`
 
-      // Determine HTTP method and request parameters
-      // Use POST with JSON body if 'body' is provided, otherwise GET with query string
-      let httpMethod = 'GET'
+      // Use the API's stored method, not inferred from input
+      let httpMethod = storedMethod
       let queryParam = ''
       let requestBody: string | undefined = undefined
 
-      if (toolCall.input?.body) {
-        // POST request with JSON body
-        httpMethod = 'POST'
-        requestBody = typeof toolCall.input.body === 'string'
-          ? toolCall.input.body
-          : JSON.stringify(toolCall.input.body)
-        console.log(`🌐 Calling API (POST): ${apiUrl}`)
-        console.log(`📤 Request body: ${requestBody}`)
-      } else if (toolCall.input?.query) {
-        // GET request with query parameters
-        const query = toolCall.input.query.trim()
-        queryParam = query.startsWith('?') ? query : `?${query}`
-        console.log(`🌐 Calling API (GET): ${apiUrl}${queryParam}`)
-      } else if (toolCall.input && Object.keys(toolCall.input).length > 0) {
-        // If input has properties but no explicit body/query, use POST with input as body
-        httpMethod = 'POST'
-        requestBody = JSON.stringify(toolCall.input)
+      if (httpMethod === 'POST') {
+        // POST request - use body from input
+        if (toolCall.input?.body) {
+          requestBody = typeof toolCall.input.body === 'string'
+            ? toolCall.input.body
+            : JSON.stringify(toolCall.input.body)
+        } else if (toolCall.input && Object.keys(toolCall.input).length > 0) {
+          // Use entire input as body if no explicit body field
+          requestBody = JSON.stringify(toolCall.input)
+        } else {
+          // POST with empty body
+          requestBody = '{}'
+        }
         console.log(`🌐 Calling API (POST): ${apiUrl}`)
         console.log(`📤 Request body: ${requestBody}`)
       } else {
-        console.log(`🌐 Calling API (GET): ${apiUrl}`)
+        // GET request - use query parameters
+        if (toolCall.input?.query) {
+          const query = toolCall.input.query.trim()
+          queryParam = query.startsWith('?') ? query : `?${query}`
+        }
+        console.log(`🌐 Calling API (GET): ${apiUrl}${queryParam}`)
       }
 
       // Call the IAO API with timeout
