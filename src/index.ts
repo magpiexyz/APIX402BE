@@ -1459,11 +1459,101 @@ app.post('/api/add-api', async (req, res) => {
 })
 
 /**
+ * PATCH /api/update-api - Update an existing API's properties (e.g., method)
+ *
+ * Request body:
+ * {
+ *   serverSlug: string,
+ *   apiSlug: string,
+ *   method: 'GET' | 'POST',
+ *   builder: string (for verification)
+ * }
+ */
+app.patch('/api/update-api', async (req, res) => {
+  try {
+    const { serverSlug, apiSlug, method, builder } = req.body
+
+    if (!serverSlug || !apiSlug || !method || !builder) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        message: "serverSlug, apiSlug, method, and builder are required"
+      })
+    }
+
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
+      })
+    }
+
+    // Get server
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug.toLowerCase())
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Verify builder ownership
+    const normalizedBuilder = builder.toLowerCase()
+    if (tokenEntry.builder.toLowerCase() !== normalizedBuilder) {
+      return res.status(403).json({
+        error: "Unauthorized",
+        message: "Only the server builder can update APIs"
+      })
+    }
+
+    // Find and update the API
+    const apis = tokenEntry.apis || []
+    const apiIndex = apis.findIndex(a => a.slug.toLowerCase() === apiSlug.toLowerCase())
+
+    if (apiIndex === -1) {
+      return res.status(404).json({
+        error: "API not found",
+        message: `No API with slug "${apiSlug}" found in server "${serverSlug}"`
+      })
+    }
+
+    // Update the method
+    apis[apiIndex].method = method
+
+    // Save to DynamoDB - update the full token entry
+    const updatedEntry = {
+      ...tokenEntry,
+      apis,
+      updatedAt: new Date().toISOString()
+    }
+    await dynamoDBService.putItem(updatedEntry as any)
+
+    console.log(`✅ Updated API ${serverSlug}/${apiSlug} method to ${method}`)
+
+    return res.json({
+      success: true,
+      message: `API method updated to ${method}`,
+      api: {
+        slug: apis[apiIndex].slug,
+        name: apis[apiIndex].name,
+        method: apis[apiIndex].method,
+        fee: apis[apiIndex].fee
+      }
+    })
+  } catch (error: any) {
+    console.error("Error updating API:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to update API"
+    })
+  }
+})
+
+/**
  * GET /api/server/:slug - Get server metadata by slug (no payment required)
- * 
+ *
  * Returns server/token information from DynamoDB without processing payment.
  * Includes all registered APIs under this server (apiUrl hidden for security).
- * 
+ *
  * @param slug - Server slug (e.g., "magpie")
  */
 app.get('/api/server/:slug', async (req, res) => {
