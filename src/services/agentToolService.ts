@@ -283,6 +283,7 @@ export class AgentToolService {
     description: string;
     fee: string;
     tokenAddress: string;
+    method: 'GET' | 'POST';
   }> {
     try {
       const servers = await this.fetchAvailableServers()
@@ -302,6 +303,7 @@ export class AgentToolService {
         name: api.name || api.slug,
         description: api.description || 'No description available',
         fee: api.fee,
+        method: api.method || 'GET',
         tokenAddress: server.id
       }
     } catch (error) {

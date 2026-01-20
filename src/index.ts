@@ -3562,6 +3562,7 @@ RULES:
             displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
             tokenAddress: apiInfo.tokenAddress,
             description: apiInfo.description,
+            method: apiInfo.method, // HTTP method (GET or POST)
             input: toolCall.input // Include the tool input so frontend can use it
           })
 
@@ -3912,7 +3913,9 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
               fee: apiInfo.fee,
               displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
               tokenAddress: apiInfo.tokenAddress,
-              description: apiInfo.description
+              description: apiInfo.description,
+              method: apiInfo.method, // HTTP method (GET or POST)
+              input: toolCall.input // Include the tool input for POST body
             })
 
             console.log(`💳 Payment option sent for ${toolCall.name}: ${apiInfo.name} (${AgentPaymentService.formatFeeForDisplay(apiInfo.fee)})`)
