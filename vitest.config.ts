@@ -22,14 +22,13 @@ export default defineConfig({
         'src/**/*.d.ts',
         'src/index.ts', // Main entry point - integration tested separately
       ],
-      // Thresholds - start low, increase as coverage improves
-      // Current: ~1% coverage with initial test file
-      // TODO: Increase thresholds as more tests are added
+      // Thresholds - increase as more tests are added
+      // Current: firestoreTokenService at 100% coverage
       thresholds: {
-        statements: 0.5,
-        branches: 0.5,
-        functions: 2,
-        lines: 0.5,
+        statements: 5,
+        branches: 5,
+        functions: 7,
+        lines: 5,
       },
     },
 
