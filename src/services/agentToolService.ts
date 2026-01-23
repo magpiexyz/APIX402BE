@@ -8,7 +8,7 @@
 
 import fetch from 'node-fetch'
 import { decompress as decompressZstd } from 'fzstd'
-import { Agent } from './agentService.js'
+import { Agent } from './firestoreAgentService.js'
 import { ToolDefinition, ToolCall } from './llmService.js'
 
 export interface ApiEntry {
@@ -18,6 +18,7 @@ export interface ApiEntry {
   description?: string
   apiUrl?: string
   fee: string
+  method?: string  // HTTP method (GET, POST, etc.)
   createdAt: string
 }
 
@@ -146,6 +147,7 @@ export class AgentToolService {
     description: string;
     fee: string;
     tokenAddress: string;
+    method: string;
   }> {
     try {
       const servers = await this.fetchAvailableServers()
@@ -165,7 +167,8 @@ export class AgentToolService {
         name: api.name || api.slug,
         description: api.description || 'No description available',
         fee: api.fee,
-        tokenAddress: server.id
+        tokenAddress: server.id,
+        method: api.method || 'GET'
       }
     } catch (error) {
       console.error('Error getting API info:', error)
