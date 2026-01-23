@@ -2,7 +2,7 @@
 
 This document describes what each test case does and why it matters.
 
-**Total Tests: 587**
+**Total Tests: 611**
 **Coverage: 99.38% statements, 94.21% branches, 98.9% functions, 99.55% lines**
 
 ---
@@ -28,6 +28,7 @@ This document describes what each test case does and why it matters.
 17. [AgentToolService](#agenttoolservice)
 18. [EVM Contract Service](#evm-contract-service)
 19. [Solana Contract Service](#solana-contract-service)
+20. [API Routes (x402 & POST Support)](#api-routes-x402--post-support)
 
 ---
 
@@ -729,6 +730,68 @@ Interacts with Solana programs.
 | `should verify payment signature` | Transaction verify | Payment confirmation |
 | `should handle RPC errors` | Network issues | Error handling |
 | `should handle invalid addresses` | Bad input | Input validation |
+
+---
+
+## API Routes (x402 & POST Support)
+
+**File:** `tests/apiRoutes.test.ts`
+
+Tests for x402 payment protocol response format and POST method support.
+
+### x402 402 Payment Required Response
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should return x402 v2 format with all required fields` | Complete response | Protocol compliance |
+| `should include facilitator address in 402 response` | payTo field | Thirdweb integration |
+| `should include API metadata in extra field` | Extra data | API discovery |
+| `should support multiple payment options` | Multi-chain | Solana + EVM support |
+| `should return 402 with verification failure details` | Auth failed | Clear error messages |
+| `should return 402 when payment amount insufficient` | Underpaid | Amount validation |
+
+### API Registration with POST Method
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should accept POST as valid HTTP method` | POST allowed | Method support |
+| `should normalize HTTP method to uppercase` | 'post' → 'POST' | Consistent handling |
+| `should reject invalid HTTP methods` | 'INVALID' rejected | Input validation |
+| `should allow same URL with different methods` | GET & POST coexist | RESTful APIs |
+| `should default method to GET when not specified` | No method given | Backwards compatibility |
+
+### POST Request Forwarding
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should forward POST request body to builder` | Body passed through | Data integrity |
+| `should include authentication header` | X-IAO-Auth present | Builder security |
+| `should handle POST with query parameters` | URL + body | Flexible APIs |
+| `should preserve Content-Type` | JSON/form data | Correct parsing |
+
+### POST Method in Tool Calls
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should include method in API info` | Method exposed | Agent awareness |
+| `should pass tool input as POST body` | Input → body | Correct forwarding |
+| `should handle GET vs POST differently` | Query vs body | Method-aware routing |
+
+### Dynamic Route Method Support
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should support GET and POST on same route` | Shared path | RESTful design |
+| `should determine method from API config` | Config-driven | Flexibility |
+| `should reject mismatched request method` | Wrong method | Security |
+
+### Payment Flow with POST Methods
+
+| Test | Scenario | Why It Matters |
+|------|----------|----------------|
+| `should include request body in payment context` | Body available | Audit trail |
+| `should settle payment before forwarding` | Pay-then-call | Correct flow |
+| `should not settle if POST request fails` | Failure handling | User protection |
 
 ---
 
