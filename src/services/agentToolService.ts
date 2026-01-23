@@ -8,7 +8,7 @@
 
 import fetch from 'node-fetch'
 import { decompress as decompressZstd } from 'fzstd'
-import { Agent } from './agentService.js'
+import { Agent } from './firestoreAgentService.js'
 import { ToolDefinition, ToolCall } from './llmService.js'
 
 export interface ApiEntry {

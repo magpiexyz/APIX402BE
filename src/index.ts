@@ -12,17 +12,17 @@ import fs from 'fs'
 import { decompress as decompressZstd } from 'fzstd'
 import { Connection, Transaction } from '@solana/web3.js'
 import bs58 from 'bs58'
-import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/dynamoDBService.js'
-import { UserRequestService } from './services/userRequestService.js'
-import { MetricsService } from './services/metricsService.js'
-import { AgentService, CreateAgentParams } from './services/agentService.js'
-import { ChatSessionService } from './services/chatSessionService.js'
+import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
+import { UserRequestService } from './services/firestoreUserRequestService.js'
+import { MetricsService } from './services/firestoreMetricsService.js'
+import { AgentService, CreateAgentParams } from './services/firestoreAgentService.js'
+import { ChatSessionService } from './services/firestoreChatSessionService.js'
 import { LLMService } from './services/llmService.js'
 import { AgentToolService } from './services/agentToolService.js'
-import { AgentPaymentService } from './services/agentPaymentService.js'
-import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/chainConfigService.js'
+import { AgentPaymentService } from './services/firestoreAgentPaymentService.js'
+import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/firestoreChainConfigService.js'
 import { generateBuilderJWT } from './utils/jwtAuth.js'
-import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/cacheService.js'
+import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
 import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -3391,7 +3391,7 @@ app.post('/api/chat/message', async (req, res) => {
     }
 
     // Save user message
-    const userMessage = await chatSessionService.saveMessage(
+    const saveResult = await chatSessionService.saveMessage(
       sessionId,
       'user',
       content
@@ -3400,7 +3400,9 @@ app.post('/api/chat/message', async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Message received. Streaming response...",
-      data: userMessage
+      data: saveResult.message,
+      // Include images to store in IndexedDB if content had large images
+      imagesToStore: saveResult.imagesToStore
     })
   } catch (error: any) {
     console.error("Error saving message:", error)
@@ -3976,7 +3978,16 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
     // Step 7: Save the assistant message to the session
     if (!hasError && assistantMessage) {
       try {
-        await chatSessionService.saveMessage(sessionId, 'assistant', assistantMessage)
+        const saveResult = await chatSessionService.saveMessage(sessionId, 'assistant', assistantMessage)
+
+        // If there are images to store locally, send SSE event to frontend
+        if (saveResult.imagesToStore && saveResult.imagesToStore.length > 0) {
+          sendEvent('store_images', {
+            messageId: saveResult.message.id,
+            images: saveResult.imagesToStore
+          })
+          console.log(`📸 Sent ${saveResult.imagesToStore.length} image(s) to frontend for local storage`)
+        }
 
         // Increment agent metrics
         await agentService.incrementMetric(agent.id, 'totalMessages')
@@ -4027,8 +4038,10 @@ app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) 
   return handleApiProxyRequest(req, res, serverSlug, apiSlug)
 })
 
-// Start server if running directly (not in Vercel)
-if (process.env.NODE_ENV !== 'production') {
+// Start server if running directly (not in Vercel serverless)
+// In Cloud Run, we ARE in production and need to start the server
+const isVercelServerless = process.env.VERCEL === '1'
+if (!isVercelServerless) {
   const PORT = process.env.PORT || 3000
   app.listen(PORT, () => {
     console.log(`🚀 Express server running on port ${PORT}`)

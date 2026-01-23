@@ -1,68 +1,12 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+/**
+ * Firestore Token Service (replaces DynamoDB Service)
+ *
+ * Handles IAO Token CRUD operations using Cloud Firestore.
+ * Maintains the same interface as the original DynamoDB service.
+ */
 
-let dynamoDBClient: DynamoDBClient | null = null;
-let dynamoDBDocClient: DynamoDBDocumentClient | null = null;
-
-function getDynamoDBClient(region: string): DynamoDBClient {
-  if (!dynamoDBClient) {
-    // Connect to deployed AWS DynamoDB instance by default
-    // AWS SDK v3 uses the default credential chain in this order:
-    // 1. Explicit credentials passed to the client (via credentials option)
-    // 2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
-    // 3. AWS credentials file (~/.aws/credentials)
-    // 4. IAM roles (if running on EC2, Lambda, ECS, etc.)
-    // 
-    // For Vercel deployment, set these environment variables:
-    // - AWS_ACCESS_KEY_ID
-    // - AWS_SECRET_ACCESS_KEY
-    // - AWS_REGION (or use DYNAMODB_REGION)
-    //
-    // For local testing, set DYNAMODB_ENDPOINT environment variable (e.g., http://localhost:8000)
-    const config: { 
-      region: string; 
-      endpoint?: string;
-      credentials?: {
-        accessKeyId: string;
-        secretAccessKey: string;
-        sessionToken?: string;
-      };
-    } = {
-      region,
-    };
-    
-    // Explicitly set credentials if provided via environment variables
-    // This is optional - if not set, AWS SDK will use the default credential chain
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-      config.credentials = {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
-      };
-      console.log(`🔑 Using explicit AWS credentials from environment variables`);
-    } else {
-      console.log(`🔍 Using AWS SDK default credential chain (env vars, credentials file, or IAM role)`);
-    }
-    
-    // Only set endpoint if explicitly provided for local testing
-    if (process.env.DYNAMODB_ENDPOINT) {
-      config.endpoint = process.env.DYNAMODB_ENDPOINT;
-      console.log(`🔧 Using local DynamoDB endpoint: ${config.endpoint}`);
-    } else {
-      console.log(`🌐 Connecting to deployed AWS DynamoDB in region: ${region}`);
-    }
-    
-    dynamoDBClient = new DynamoDBClient(config);
-  }
-  return dynamoDBClient;
-}
-
-function getDynamoDBDocClient(region: string): DynamoDBDocumentClient {
-  if (!dynamoDBDocClient) {
-    dynamoDBDocClient = DynamoDBDocumentClient.from(getDynamoDBClient(region));
-  }
-  return dynamoDBDocClient;
-}
+import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
+import type { Firestore } from '@google-cloud/firestore';
 
 /**
  * Individual API entry within a token
@@ -84,20 +28,8 @@ export interface ApiEntry {
  * One token can have multiple APIs (1:N relationship)
  * Each API has its own fee (per-API pricing)
  */
-/**
- * Normalize address for storage/lookup
- * EVM addresses (0x...) are lowercased for consistency
- * Solana addresses (base58) are kept as-is since base58 is case-sensitive
- */
-function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
-    return address.toLowerCase();
-  }
-  return address; // Solana addresses - keep original case
-}
-
 export interface IAOTokenDBEntry {
-  id: string;                    // Token address (lowercase) - Primary Key
+  id: string;                    // Token address (lowercase) - Document ID
   slug: string;                  // Unique server slug (e.g., "magpie")
   name: string;                  // Token/server name
   symbol: string;                // Token symbol
@@ -114,157 +46,108 @@ export interface IAOTokenDBEntry {
   updatedAt: string;             // ISO timestamp
 }
 
-class DynamoDBService {
-  private ddbDocClient: DynamoDBDocumentClient;
-  private tableName: string;
+/**
+ * Normalize address for storage/lookup
+ * EVM addresses (0x...) are lowercased for consistency
+ * Solana addresses (base58) are kept as-is since base58 is case-sensitive
+ */
+function normalizeAddress(address: string): string {
+  if (address.startsWith('0x')) {
+    return address.toLowerCase();
+  }
+  return address; // Solana addresses - keep original case
+}
 
-  constructor(region: string, tableName: string) {
-    this.ddbDocClient = getDynamoDBDocClient(region);
-    this.tableName = tableName;
+class DynamoDBService {
+  private firestore: Firestore;
+  private collectionName: string;
+
+  constructor(_region: string, _tableName: string) {
+    // Region and tableName are ignored - using Firestore
+    this.firestore = getFirestoreClient();
+    this.collectionName = Collections.IAO_TOKENS;
   }
 
   async putItem(item: IAOTokenDBEntry): Promise<void> {
-    const params = {
-      TableName: this.tableName,
-      Item: item,
-    };
-
     try {
-      await this.ddbDocClient.send(new PutCommand(params));
-      console.log(`✅ DynamoDB putItem success for ${item.id}`);
+      const docRef = this.firestore.collection(this.collectionName).doc(item.id);
+      await docRef.set(item);
+      console.log(`✅ Firestore putItem success for ${item.id}`);
     } catch (err) {
-      console.error(`❌ DynamoDB putItem fail for ${item.id}:`, err);
+      console.error(`❌ Firestore putItem fail for ${item.id}:`, err);
       throw err;
     }
   }
 
   async getItem(id: string): Promise<IAOTokenDBEntry | null> {
     const normalizedId = normalizeAddress(id);
-    const params = {
-      TableName: this.tableName,
-      Key: { id: normalizedId },
-    };
-
     try {
-      const data = await this.ddbDocClient.send(new GetCommand(params));
-      return (data.Item as IAOTokenDBEntry) || null;
+      const docRef = this.firestore.collection(this.collectionName).doc(normalizedId);
+      const doc = await docRef.get();
+      if (!doc.exists) {
+        return null;
+      }
+      return doc.data() as IAOTokenDBEntry;
     } catch (err) {
-      console.error(`❌ DynamoDB getItem fail for ${id}:`, err);
+      console.error(`❌ Firestore getItem fail for ${id}:`, err);
       return null;
     }
   }
 
   async deleteItem(id: string): Promise<void> {
     const normalizedId = normalizeAddress(id);
-    const params = {
-      TableName: this.tableName,
-      Key: { id: normalizedId },
-    };
-
     try {
-      await this.ddbDocClient.send(new DeleteCommand(params));
-      console.log(`✅ DynamoDB deleteItem success for ${id}`);
+      const docRef = this.firestore.collection(this.collectionName).doc(normalizedId);
+      await docRef.delete();
+      console.log(`✅ Firestore deleteItem success for ${id}`);
     } catch (err) {
-      console.error(`❌ DynamoDB deleteItem fail for ${id}:`, err);
+      console.error(`❌ Firestore deleteItem fail for ${id}:`, err);
       throw err;
     }
   }
 
   async scanAllItems(): Promise<IAOTokenDBEntry[]> {
-    const params = {
-      TableName: this.tableName,
-    };
-
     try {
-      const data = await this.ddbDocClient.send(new ScanCommand(params));
-      return (data.Items as IAOTokenDBEntry[]) || [];
+      const snapshot = await this.firestore.collection(this.collectionName).get();
+      return snapshot.docs.map(doc => doc.data() as IAOTokenDBEntry);
     } catch (err) {
-      console.error("❌ DynamoDB scanAllItems error:", err);
+      console.error("❌ Firestore scanAllItems error:", err);
       throw err;
     }
   }
 
   async scanItemsByBuilder(builderAddress: string): Promise<IAOTokenDBEntry[]> {
     const normalizedBuilder = normalizeAddress(builderAddress);
-    const params = {
-      TableName: this.tableName,
-      FilterExpression: "#builder = :builder",
-      ExpressionAttributeNames: {
-        "#builder": "builder"
-      },
-      ExpressionAttributeValues: {
-        ":builder": normalizedBuilder
-      }
-    };
-
     try {
-      const data = await this.ddbDocClient.send(new ScanCommand(params));
-      return (data.Items as IAOTokenDBEntry[]) || [];
+      const snapshot = await this.firestore
+        .collection(this.collectionName)
+        .where('builder', '==', normalizedBuilder)
+        .get();
+      return snapshot.docs.map(doc => doc.data() as IAOTokenDBEntry);
     } catch (err) {
-      console.error(`❌ DynamoDB scanItemsByBuilder error for ${builderAddress}:`, err);
+      console.error(`❌ Firestore scanItemsByBuilder error for ${builderAddress}:`, err);
       throw err;
     }
   }
 
   /**
-   * Get a token by its slug using GSI for O(1) lookup
-   * Falls back to Scan if GSI doesn't exist (backwards compatible)
+   * Get a token by its slug using Firestore index for O(1) lookup
    */
   async getItemBySlug(slug: string): Promise<IAOTokenDBEntry | null> {
     const normalizedSlug = slug.toLowerCase();
-
-    // Try GSI query first (O(1) lookup)
     try {
-      const queryParams = {
-        TableName: this.tableName,
-        IndexName: "slug-index",
-        KeyConditionExpression: "#slug = :slug",
-        ExpressionAttributeNames: {
-          "#slug": "slug"
-        },
-        ExpressionAttributeValues: {
-          ":slug": normalizedSlug
-        }
-      };
+      const snapshot = await this.firestore
+        .collection(this.collectionName)
+        .where('slug', '==', normalizedSlug)
+        .limit(1)
+        .get();
 
-      const data = await this.ddbDocClient.send(new QueryCommand(queryParams));
-      const items = data.Items as IAOTokenDBEntry[];
-      if (items && items.length > 0) {
-        return items[0];
+      if (snapshot.empty) {
+        return null;
       }
-      return null;
-    } catch (err: any) {
-      // If GSI doesn't exist, fall back to Scan
-      if (err.name === 'ValidationException' && err.message?.includes('slug-index')) {
-        console.warn(`⚠️ GSI slug-index not found, falling back to Scan for slug: ${slug}`);
-        return this.getItemBySlugFallback(normalizedSlug);
-      }
-      console.error(`❌ DynamoDB getItemBySlug fail for ${slug}:`, err);
-      return null;
-    }
-  }
-
-  /**
-   * Fallback method using Scan (for backwards compatibility when GSI doesn't exist)
-   */
-  private async getItemBySlugFallback(slug: string): Promise<IAOTokenDBEntry | null> {
-    const params = {
-      TableName: this.tableName,
-      FilterExpression: "#slug = :slug",
-      ExpressionAttributeNames: {
-        "#slug": "slug"
-      },
-      ExpressionAttributeValues: {
-        ":slug": slug
-      }
-    };
-
-    try {
-      const data = await this.ddbDocClient.send(new ScanCommand(params));
-      const items = data.Items as IAOTokenDBEntry[];
-      return items && items.length > 0 ? items[0] : null;
+      return snapshot.docs[0].data() as IAOTokenDBEntry;
     } catch (err) {
-      console.error(`❌ DynamoDB getItemBySlugFallback fail for ${slug}:`, err);
+      console.error(`❌ Firestore getItemBySlug fail for ${slug}:`, err);
       return null;
     }
   }
@@ -302,7 +185,7 @@ class DynamoDBService {
       }
       return { exists: false };
     } catch (err) {
-      console.error(`❌ DynamoDB apiUrlExists error:`, err);
+      console.error(`❌ Firestore apiUrlExists error:`, err);
       return { exists: false };
     }
   }
@@ -339,7 +222,7 @@ class DynamoDBService {
 
       return duplicates;
     } catch (err) {
-      console.error(`❌ DynamoDB checkApiUrlsDuplicate error:`, err);
+      console.error(`❌ Firestore checkApiUrlsDuplicate error:`, err);
       return [];
     }
   }
@@ -391,7 +274,7 @@ class DynamoDBService {
 
     await this.putItem(updatedToken);
     console.log(`✅ Added API ${apiName} (slug: ${apiSlug}, index: ${nextIndex}) to token ${tokenAddress}`);
-    
+
     return newApi;
   }
 
@@ -417,4 +300,3 @@ class DynamoDBService {
 }
 
 export { DynamoDBService };
-

@@ -1,61 +1,39 @@
 /**
- * DynamoDB-backed Cache Service
- * Following the ecoAPI pattern (/home/error0180/ecoAPI/src/utils/cache2.ts)
+ * Firestore-backed Cache Service (replaces DynamoDB Cache Service)
  *
  * Features:
- * - Persistent cache (survives Lambda cold starts and server restarts)
+ * - Persistent cache (survives server restarts)
  * - Shared cache across all instances
  * - Environment-aware keys (dev_ prefix for non-production)
  * - Graceful degradation (returns stale data with isExpired flag)
- * - TTL-based expiration with DynamoDB auto-cleanup
+ * - TTL-based expiration with Firestore TTL policy auto-cleanup
  */
 
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import dayjs from "dayjs";
+import { getFirestoreClient, Collections, Timestamp } from '../db/firestoreClient.js';
+import type { Firestore } from '@google-cloud/firestore';
+import dayjs from 'dayjs';
 
 // Configuration
-const CACHE_TABLE_NAME = process.env.CACHE_TABLE_NAME || 'apix-cache';
-const DYNAMODB_REGION = process.env.DYNAMODB_REGION || 'us-west-1';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
-// DynamoDB client singleton
-let ddbDocClient: DynamoDBDocumentClient | null = null;
+// Firestore client singleton
+let firestoreClient: Firestore | null = null;
 
-function getDdbDocClient(): DynamoDBDocumentClient {
-  if (!ddbDocClient) {
-    const config: { region: string; endpoint?: string; credentials?: any } = {
-      region: DYNAMODB_REGION,
-    };
-
-    // Use explicit credentials if provided
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-      config.credentials = {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
-      };
-    }
-
-    // Use local endpoint if provided
-    if (process.env.DYNAMODB_ENDPOINT) {
-      config.endpoint = process.env.DYNAMODB_ENDPOINT;
-    }
-
-    const client = new DynamoDBClient(config);
-    ddbDocClient = DynamoDBDocumentClient.from(client);
+function getFirestore(): Firestore {
+  if (!firestoreClient) {
+    firestoreClient = getFirestoreClient();
   }
-  return ddbDocClient;
+  return firestoreClient;
 }
 
 /**
- * Cache entry stored in DynamoDB
+ * Cache entry stored in Firestore
  */
 interface CacheEntry {
   id: string;           // Cache key (with dev_ prefix for non-production)
   data: string;         // JSON stringified cache data
-  dataTime: number;     // Unix timestamp of write
-  ttl: number;          // Unix timestamp for DynamoDB TTL auto-cleanup
+  dataTime: number;     // Unix timestamp of write (seconds)
+  ttl: Timestamp;       // Firestore Timestamp for TTL auto-cleanup
 }
 
 /**
@@ -122,7 +100,7 @@ export async function setCached<T>(
   try {
     const cacheKey = getCacheKey(key);
     const date = new Date();
-    const currentTime = Math.round(date.getTime() / 1000);
+    const currentTimeSeconds = Math.round(date.getTime() / 1000);
 
     const cacheData: CacheData<T> = {
       data: value,
@@ -131,19 +109,23 @@ export async function setCached<T>(
       duration: durationMs,
     };
 
+    // Set TTL timestamp - Firestore will auto-delete expired documents
+    // For "never expire", set TTL to 100 years
+    const ttlSeconds = durationMs === -1
+      ? currentTimeSeconds + (100 * 365 * 24 * 60 * 60)
+      : currentTimeSeconds + Math.ceil(durationMs / 1000) + 86400; // Add 1 day buffer
+
     const cacheEntry: CacheEntry = {
       id: cacheKey,
       data: JSON.stringify(cacheData),
-      dataTime: currentTime,
-      // Set DynamoDB TTL to 100 years (practically never auto-delete)
-      // We handle expiration manually in getCached()
-      ttl: currentTime + (100 * 365 * 24 * 60 * 60),
+      dataTime: currentTimeSeconds,
+      ttl: Timestamp.fromMillis(ttlSeconds * 1000),
     };
 
-    await getDdbDocClient().send(new PutCommand({
-      TableName: CACHE_TABLE_NAME,
-      Item: cacheEntry,
-    }));
+    await getFirestore()
+      .collection(Collections.CACHE)
+      .doc(cacheKey)
+      .set(cacheEntry);
 
     console.log(`📦 Cache SET: ${key} (TTL: ${durationMs}ms)`);
   } catch (error) {
@@ -162,17 +144,18 @@ export async function setCached<T>(
 export async function getCached<T>(key: string): Promise<CacheResult<T> | undefined> {
   try {
     const cacheKey = getCacheKey(key);
-    const result = await getDdbDocClient().send(new GetCommand({
-      TableName: CACHE_TABLE_NAME,
-      Key: { id: cacheKey },
-    }));
+    const doc = await getFirestore()
+      .collection(Collections.CACHE)
+      .doc(cacheKey)
+      .get();
 
-    if (!result.Item) {
+    if (!doc.exists) {
       console.log(`📦 Cache MISS: ${key}`);
       return undefined;
     }
 
-    const cacheData: CacheData<T> = JSON.parse(result.Item.data);
+    const entry = doc.data() as CacheEntry;
+    const cacheData: CacheData<T> = JSON.parse(entry.data);
     const currentTimestamp = Date.now();
 
     // Duration -1 means never expire
@@ -205,10 +188,10 @@ export async function getCached<T>(key: string): Promise<CacheResult<T> | undefi
 export async function invalidateCache(key: string): Promise<void> {
   try {
     const cacheKey = getCacheKey(key);
-    await getDdbDocClient().send(new DeleteCommand({
-      TableName: CACHE_TABLE_NAME,
-      Key: { id: cacheKey },
-    }));
+    await getFirestore()
+      .collection(Collections.CACHE)
+      .doc(cacheKey)
+      .delete();
     console.log(`📦 Cache DELETE: ${key}`);
   } catch (error) {
     console.error(`❌ deleteCacheError|${key}|${error}`);
@@ -218,14 +201,34 @@ export async function invalidateCache(key: string): Promise<void> {
 
 /**
  * Invalidate all cache entries matching a prefix
- * Note: This is expensive as it requires scanning. Use sparingly.
+ * Note: This requires a query in Firestore
  * @param prefix - Key prefix to match (e.g., "server:" to invalidate all server caches)
  */
 export async function invalidateCacheByPrefix(prefix: string): Promise<void> {
-  // For DynamoDB, this would require a Scan operation which is expensive
-  // In production, you might want to maintain a separate index of keys
-  // For now, we log a warning
-  console.warn(`⚠️ invalidateCacheByPrefix not fully implemented for DynamoDB. Prefix: ${prefix}`);
+  try {
+    const cachePrefix = getCacheKey(prefix);
+    const snapshot = await getFirestore()
+      .collection(Collections.CACHE)
+      .where('id', '>=', cachePrefix)
+      .where('id', '<', cachePrefix + '\uf8ff')
+      .get();
+
+    if (snapshot.empty) {
+      console.log(`📦 No cache entries found with prefix: ${prefix}`);
+      return;
+    }
+
+    const batch = getFirestore().batch();
+    snapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+    await batch.commit();
+
+    console.log(`📦 Cache DELETE by prefix: ${prefix} (${snapshot.docs.length} entries)`);
+  } catch (error) {
+    console.error(`❌ deleteCacheByPrefixError|${prefix}|${error}`);
+    // Don't throw - cache failures shouldn't break the application
+  }
 }
 
 /**

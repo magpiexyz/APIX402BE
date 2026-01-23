@@ -7,7 +7,7 @@
 import { facilitator as thirdwebFacilitatorFn, settlePayment } from 'thirdweb/x402';
 import { createThirdwebClient } from 'thirdweb';
 import { baseSepolia } from 'thirdweb/chains';
-import { ChainType, ChainConfigEntry } from './chainConfigService.js';
+import { ChainType, ChainConfigEntry } from './firestoreChainConfigService.js';
 
 /**
  * Payment verification result

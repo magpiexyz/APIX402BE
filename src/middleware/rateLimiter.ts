@@ -19,7 +19,7 @@ import {
   getGlobalKey,
   RATE_LIMITS,
   RateLimitResult,
-} from '../services/rateLimitService.js';
+} from '../services/firestoreRateLimitService.js';
 
 /**
  * Extract IP address from request

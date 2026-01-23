@@ -95,3 +95,12 @@ aws dynamodb create-table --endpoint-url http://localhost:8000 \
     --attribute-definitions AttributeName=chainId,AttributeType=S \
     --key-schema AttributeName=chainId,KeyType=HASH \
     --billing-mode PAY_PER_REQUEST
+
+  aws dynamodb create-table \         
+    --endpoint-url http://localhost:8000 \
+    --region us-east-1 \
+    --table-name apix-cache \                                                                                                                                                         
+    --attribute-definitions AttributeName=cacheKey,AttributeType=S \                                                                                                                  
+    --key-schema AttributeName=cacheKey,KeyType=HASH \                                                                                                                                
+    --billing-mode PAY_PER_REQUEST \                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                      
