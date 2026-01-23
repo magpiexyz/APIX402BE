@@ -12,16 +12,18 @@ import fs from 'fs'
 import { decompress as decompressZstd } from 'fzstd'
 import { Connection, Transaction } from '@solana/web3.js'
 import bs58 from 'bs58'
-import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/dynamoDBService.js'
-import { UserRequestService } from './services/userRequestService.js'
-import { MetricsService } from './services/metricsService.js'
-import { AgentService, CreateAgentParams } from './services/agentService.js'
-import { ChatSessionService } from './services/chatSessionService.js'
+import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
+import { UserRequestService } from './services/firestoreUserRequestService.js'
+import { MetricsService } from './services/firestoreMetricsService.js'
+import { AgentService, CreateAgentParams } from './services/firestoreAgentService.js'
+import { ChatSessionService } from './services/firestoreChatSessionService.js'
 import { LLMService } from './services/llmService.js'
 import { AgentToolService } from './services/agentToolService.js'
-import { AgentPaymentService } from './services/agentPaymentService.js'
-import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/chainConfigService.js'
+import { AgentPaymentService } from './services/firestoreAgentPaymentService.js'
+import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/firestoreChainConfigService.js'
 import { generateBuilderJWT } from './utils/jwtAuth.js'
+import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
+import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -67,7 +69,15 @@ app.use(cors(corsOptions))
 // Handle preflight OPTIONS requests explicitly
 app.options('*', cors(corsOptions))
 
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))  // Increased for base64 image responses
+
+// Apply global rate limiter (excludes /health and /)
+app.use(globalRateLimiter)
+
+// Health check endpoint for load testing and monitoring
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() })
+})
 
 // Serve static files from public directory (built frontend)
 // Only serve static files if public directory exists (frontend has been built)
@@ -363,7 +373,8 @@ async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | n
 }
 
 /**
- * Get IAO token entry by server slug from DynamoDB
+ * Get IAO token entry by server slug from DynamoDB (with caching)
+ * Uses DynamoDB-backed cache for fast repeated lookups
  */
 async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry | null> {
   if (!dynamoDBService) {
@@ -371,7 +382,17 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
     return null
   }
 
+  const cacheKey = CacheKeys.SERVER_BY_SLUG(serverSlug)
+
   try {
+    // Check cache first
+    const cacheResult = await getCached<IAOTokenEntry>(cacheKey)
+    if (cacheResult && !cacheResult.isExpired && cacheResult.data) {
+      console.log(`✅ Cache HIT for slug: ${serverSlug}`)
+      return cacheResult.data
+    }
+
+    // Cache miss or expired - fetch from DynamoDB
     const dbEntry = await dynamoDBService.getItemBySlug(serverSlug)
     if (dbEntry) {
       const tokenEntry: IAOTokenEntry = {
@@ -387,13 +408,25 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
         tags: dbEntry.tags,
         apis: dbEntry.apis || [],
       }
-      console.log(`✅ Found IAO token by slug: ${serverSlug} (${dbEntry.apis?.length || 0} APIs)`)
+
+      // Cache the result for 5 minutes
+      await setCached(cacheKey, tokenEntry, CacheTTL.MEDIUM)
+
+      console.log(`✅ Found IAO token by slug: ${serverSlug} (${dbEntry.apis?.length || 0} APIs) - cached`)
       return tokenEntry
     }
     console.log(`❌ No IAO token entry found for slug: ${serverSlug}`)
     return null
   } catch (error) {
     console.error(`Error querying DynamoDB for slug ${serverSlug}:`, error)
+
+    // If cache had stale data, use it as fallback
+    const cacheResult = await getCached<IAOTokenEntry>(cacheKey)
+    if (cacheResult?.data) {
+      console.warn(`⚠️ Using stale cache for slug: ${serverSlug} due to DB error`)
+      return cacheResult.data
+    }
+
     return null
   }
 }
@@ -523,6 +556,88 @@ function validateTags(tags: any): string[] | null {
 }
 
 /**
+ * Configuration for async proxy polling
+ */
+const PROXY_POLLING_CONFIG = {
+  pollIntervalMs: 5000,        // 5 seconds between polls
+  maxDurationMs: 5 * 60 * 1000, // 5 minutes max
+  maxAttempts: 60,             // Max poll attempts
+}
+
+/**
+ * Poll for async API result
+ * Used by proxy to automatically poll status URL when API returns 202
+ */
+async function pollForProxyResult(
+  statusUrl: string,
+  baseUrl: string,
+  maxDurationMs: number = PROXY_POLLING_CONFIG.maxDurationMs
+): Promise<{ success: boolean; status: number; result?: any; error?: string }> {
+  const startTime = Date.now()
+  let attempts = 0
+
+  // Resolve relative URL to absolute
+  const fullStatusUrl = statusUrl.startsWith('http')
+    ? statusUrl
+    : new URL(statusUrl, baseUrl).toString()
+
+  console.log(`⏳ Starting async polling for: ${fullStatusUrl}`)
+
+  while (Date.now() - startTime < maxDurationMs && attempts < PROXY_POLLING_CONFIG.maxAttempts) {
+    attempts++
+
+    try {
+      const response = await fetch(fullStatusUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      })
+
+      const data = await response.json() as Record<string, any>
+
+      if (response.status === 200) {
+        // Check if still processing (some APIs return 200 with status field)
+        if (data?.status === 'processing' || data?.status === 'pending') {
+          console.log(`⏳ Poll ${attempts}: Still processing...`)
+          await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+          continue
+        }
+
+        // Check for failure status
+        if (data?.status === 'failed' || data?.status === 'error') {
+          console.log(`❌ Poll ${attempts}: Job failed`)
+          return { success: false, status: 500, error: data?.error || data?.message || 'Job failed' }
+        }
+
+        // Success - return result
+        console.log(`✅ Poll ${attempts}: Job completed`)
+        return { success: true, status: 200, result: data?.result || data }
+      }
+
+      if (response.status === 202) {
+        // Still processing, continue polling
+        const progress = data?.progress || 'unknown'
+        console.log(`⏳ Poll ${attempts}: Processing (${progress}% complete)...`)
+        await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+        continue
+      }
+
+      // Non-2xx status = error
+      console.log(`❌ Poll ${attempts}: Status ${response.status}`)
+      return { success: false, status: response.status, error: `Status check returned ${response.status}` }
+
+    } catch (error: any) {
+      console.error(`⚠️ Poll ${attempts} error:`, error.message)
+      // On network error, wait and retry
+      await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+    }
+  }
+
+  // Timeout
+  console.log(`❌ Polling timed out after ${attempts} attempts`)
+  return { success: false, status: 504, error: `Async operation timed out after ${maxDurationMs / 1000} seconds` }
+}
+
+/**
  * Verify EIP-3009 payment authorization signature
  * This validates the signature WITHOUT executing the transfer
  */
@@ -636,14 +751,22 @@ async function executePaymentTransfer(
     console.log('📊 settlePayment result:', {
       status: paymentResult.status,
       hasPaymentReceipt: paymentResult.status === 200 && !!paymentResult.paymentReceipt,
+      paymentReceiptKeys: paymentResult.status === 200 ? Object.keys(paymentResult.paymentReceipt || {}) : [],
+      paymentReceipt: paymentResult.status === 200 ? JSON.stringify(paymentResult.paymentReceipt, null, 2) : null,
       timestamp: new Date().toISOString()
     })
     
     if (paymentResult.status === 200) {
       console.log('✅ Payment settled successfully!')
-      return { 
-        success: true, 
-        txHash: paymentResult.paymentReceipt?.transaction,
+      // Try multiple possible property names for on-chain transaction hash
+      const receipt = paymentResult.paymentReceipt as Record<string, any> || {}
+      const txHash = receipt.transactionHash  // Preferred: actual on-chain hash
+        || receipt.txHash
+        || receipt.hash
+        || (typeof receipt.transaction === 'string' && receipt.transaction.startsWith('0x') ? receipt.transaction : undefined)
+      return {
+        success: true,
+        txHash,
         paymentReceipt: paymentResult.paymentReceipt
       }
     } else {
@@ -764,7 +887,7 @@ app.post('/api/register', async (req, res) => {
 
 
       // Validate API fields and check for duplicates
-      const apiUrls: string[] = []
+      const apiUrlsWithMethods: { url: string; method: 'GET' | 'POST' }[] = []
       const apiSlugs = new Set<string>()
 
       for (let i = 0; i < apis.length; i++) {
@@ -815,7 +938,7 @@ app.post('/api/register', async (req, res) => {
         // Validate URL format
         try {
           new URL(api.apiUrl)
-          apiUrls.push(api.apiUrl)
+          apiUrlsWithMethods.push({ url: api.apiUrl, method: api.method || 'GET' })
         } catch {
           return res.status(400).json({
             error: "Invalid API URL",
@@ -839,10 +962,10 @@ app.post('/api/register', async (req, res) => {
           
           clearTimeout(timeoutId)
           
-          if (response.status !== 200) {
+          if (response.status !== 200 && response.status !== 202) {
             return res.status(400).json({
               error: "API endpoint validation failed",
-              message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200. Please ensure your API endpoint is accessible and returns a 200 status code.`
+              message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
             })
           }
         } catch (fetchError: any) {
@@ -852,22 +975,24 @@ app.post('/api/register', async (req, res) => {
               message: `API at index ${i} (${api.apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
             })
           }
-          
+
           return res.status(400).json({
             error: "API endpoint validation failed",
-            message: `API at index ${i} (${api.apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 status code.`
+            message: `API at index ${i} (${api.apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 or 202 status code.`
           })
         }
       }
 
-      // Check if any API URLs are already registered globally
-      const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrls)
+      // Check if any API URL + method combinations are already registered globally
+      // Same URL with different methods (GET vs POST) is allowed
+      const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
       if (duplicateApis.length > 0) {
         return res.status(409).json({
           error: "Duplicate API URL(s)",
-          message: `The following API endpoint(s) are already registered: ${duplicateApis.map(d => d.url).join(', ')}`,
+          message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
           duplicates: duplicateApis.map(d => ({
             url: d.url,
+            method: d.method,
             registeredOn: d.serverSlug
           }))
         })
@@ -975,15 +1100,19 @@ app.post('/api/register', async (req, res) => {
       })
     }
 
-    // Check if any API URLs are already registered globally
-    const apiUrls = apis.map((api: any) => api.apiUrl).filter((url: string) => url)
-    const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrls)
+    // Check if any API URL + method combinations are already registered globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const apiUrlsWithMethods = apis
+      .filter((api: any) => api.apiUrl)
+      .map((api: any) => ({ url: api.apiUrl, method: (api.method || 'GET') as 'GET' | 'POST' }))
+    const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
     if (duplicateApis.length > 0) {
       return res.status(409).json({
         error: "Duplicate API URL(s)",
-        message: `The following API endpoint(s) are already registered: ${duplicateApis.map(d => d.url).join(', ')}`,
+        message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
         duplicates: duplicateApis.map(d => ({
           url: d.url,
+          method: d.method,
           registeredOn: d.serverSlug
         }))
       })
@@ -1057,11 +1186,11 @@ app.post('/api/register', async (req, res) => {
         })
         
         clearTimeout(timeoutId)
-        
-        if (response.status !== 200) {
+
+        if (response.status !== 200 && response.status !== 202) {
           return res.status(400).json({
             error: "API endpoint validation failed",
-            message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200. Please ensure your API endpoint is accessible and returns a 200 status code.`
+            message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
           })
         }
       } catch (fetchError: any) {
@@ -1071,10 +1200,10 @@ app.post('/api/register', async (req, res) => {
             message: `API at index ${i} (${api.apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
           })
         }
-        
+
         return res.status(400).json({
           error: "API endpoint validation failed",
-          message: `API at index ${i} (${api.apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 status code.`
+          message: `API at index ${i} (${api.apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 or 202 status code.`
         })
       }
 
@@ -1085,6 +1214,7 @@ app.post('/api/register', async (req, res) => {
         apiUrl: api.apiUrl,
         description: api.description,
         fee: api.fee,
+        method: api.method || 'GET',  // Default to GET if not specified
         createdAt: now,
       })
     }
@@ -1113,6 +1243,9 @@ app.post('/api/register', async (req, res) => {
 
     // Store in DynamoDB
     await dynamoDBService.putItem(tokenEntry)
+
+    // Invalidate any stale cache for this slug
+    await invalidateCache(CacheKeys.SERVER_BY_SLUG(finalServerSlug))
 
     console.log(`✅ Registered new server: ${finalServerSlug} (${name}/${symbol}) with ${apiEntries.length} API(s)`)
 
@@ -1163,6 +1296,7 @@ app.post('/api/add-api', async (req, res) => {
       apiUrl,
       description,
       fee,
+      method = 'GET',  // Default to GET if not specified
       builder,
     } = req.body
 
@@ -1171,6 +1305,14 @@ app.post('/api/add-api', async (req, res) => {
       return res.status(400).json({
         error: "Missing required fields",
         message: "serverSlug, slug, name, apiUrl, description, fee, and builder are required"
+      })
+    }
+
+    // Validate method
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
       })
     }
 
@@ -1233,10 +1375,10 @@ app.post('/api/add-api', async (req, res) => {
       
       clearTimeout(timeoutId)
       
-      if (response.status !== 200) {
+      if (response.status !== 200 && response.status !== 202) {
         return res.status(400).json({
           error: "API endpoint validation failed",
-          message: `API endpoint (${apiUrl}) returned status code ${response.status} instead of 200. Please ensure your API endpoint is accessible and returns a 200 status code.`
+          message: `API endpoint (${apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
         })
       }
     } catch (fetchError: any) {
@@ -1286,12 +1428,13 @@ app.post('/api/add-api', async (req, res) => {
       })
     }
 
-    // Check if API URL already exists globally
-    const existingApiUrl = await dynamoDBService.apiUrlExists(apiUrl)
+    // Check if API URL + method combination already exists globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const existingApiUrl = await dynamoDBService.apiUrlExists(apiUrl, method as 'GET' | 'POST')
     if (existingApiUrl.exists) {
       return res.status(409).json({
         error: "Duplicate API URL",
-        message: `This API endpoint is already registered on server "${existingApiUrl.serverSlug}".`
+        message: `This API endpoint with ${method} method is already registered on server "${existingApiUrl.serverSlug}".`
       })
     }
 
@@ -1302,7 +1445,8 @@ app.post('/api/add-api', async (req, res) => {
       name,
       apiUrl,
       description,
-      fee
+      fee,
+      method as 'GET' | 'POST'
     )
 
     if (!newApi) {
@@ -1330,11 +1474,101 @@ app.post('/api/add-api', async (req, res) => {
 })
 
 /**
+ * PATCH /api/update-api - Update an existing API's properties (e.g., method)
+ *
+ * Request body:
+ * {
+ *   serverSlug: string,
+ *   apiSlug: string,
+ *   method: 'GET' | 'POST',
+ *   builder: string (for verification)
+ * }
+ */
+app.patch('/api/update-api', async (req, res) => {
+  try {
+    const { serverSlug, apiSlug, method, builder } = req.body
+
+    if (!serverSlug || !apiSlug || !method || !builder) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        message: "serverSlug, apiSlug, method, and builder are required"
+      })
+    }
+
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
+      })
+    }
+
+    // Get server
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug.toLowerCase())
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Verify builder ownership
+    const normalizedBuilder = builder.toLowerCase()
+    if (tokenEntry.builder.toLowerCase() !== normalizedBuilder) {
+      return res.status(403).json({
+        error: "Unauthorized",
+        message: "Only the server builder can update APIs"
+      })
+    }
+
+    // Find and update the API
+    const apis = tokenEntry.apis || []
+    const apiIndex = apis.findIndex(a => a.slug.toLowerCase() === apiSlug.toLowerCase())
+
+    if (apiIndex === -1) {
+      return res.status(404).json({
+        error: "API not found",
+        message: `No API with slug "${apiSlug}" found in server "${serverSlug}"`
+      })
+    }
+
+    // Update the method
+    apis[apiIndex].method = method
+
+    // Save to DynamoDB - update the full token entry
+    const updatedEntry = {
+      ...tokenEntry,
+      apis,
+      updatedAt: new Date().toISOString()
+    }
+    await dynamoDBService.putItem(updatedEntry as any)
+
+    console.log(`✅ Updated API ${serverSlug}/${apiSlug} method to ${method}`)
+
+    return res.json({
+      success: true,
+      message: `API method updated to ${method}`,
+      api: {
+        slug: apis[apiIndex].slug,
+        name: apis[apiIndex].name,
+        method: apis[apiIndex].method,
+        fee: apis[apiIndex].fee
+      }
+    })
+  } catch (error: any) {
+    console.error("Error updating API:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to update API"
+    })
+  }
+})
+
+/**
  * GET /api/server/:slug - Get server metadata by slug (no payment required)
- * 
+ *
  * Returns server/token information from DynamoDB without processing payment.
  * Includes all registered APIs under this server (apiUrl hidden for security).
- * 
+ *
  * @param slug - Server slug (e.g., "magpie")
  */
 app.get('/api/server/:slug', async (req, res) => {
@@ -1415,8 +1649,16 @@ app.get('/api/chains', async (_req, res) => {
 })
 
 /**
- * GET /api/servers - Get all registered servers
- * Returns all servers from DynamoDB
+ * GET /api/servers - Get all registered servers with filtering and pagination
+ * Query params:
+ *   - chainId: Filter by chain ID
+ *   - search: Search in name, symbol, slug, tags
+ *   - category: Filter by tag
+ *   - minPrice: Minimum API fee in USDC (e.g., 0.01)
+ *   - maxPrice: Maximum API fee in USDC (e.g., 1.0)
+ *   - sortBy: trending | newest | price-low | price-high
+ *   - limit: Number of servers per page (default 20, max 100)
+ *   - offset: Number of servers to skip (for pagination)
  */
 app.get('/api/servers', async (req, res) => {
   try {
@@ -1427,18 +1669,100 @@ app.get('/api/servers', async (req, res) => {
       })
     }
 
-    // Get chainId filter from query params (optional)
+    // Parse query parameters
     const chainIdFilter = req.query.chainId as string | undefined;
+    const search = (req.query.search as string || '').toLowerCase().trim();
+    const category = req.query.category as string | undefined;
+    const minPrice = req.query.minPrice ? parseFloat(req.query.minPrice as string) : undefined;
+    const maxPrice = req.query.maxPrice ? parseFloat(req.query.maxPrice as string) : undefined;
+    const sortBy = (req.query.sortBy as string || 'trending').toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
 
-    let tokens = await dynamoDBService.scanAllItems()
+    let tokens = await dynamoDBService.scanAllItems();
 
     // Filter by chainId if provided
     if (chainIdFilter) {
       tokens = tokens.filter(token => token.chainId === chainIdFilter);
     }
 
+    // Filter by search query (name, symbol, slug, tags)
+    if (search) {
+      tokens = tokens.filter(token => {
+        const nameMatch = (token.name || '').toLowerCase().includes(search);
+        const symbolMatch = (token.symbol || '').toLowerCase().includes(search);
+        const slugMatch = (token.slug || '').toLowerCase().includes(search);
+        const tagsMatch = (token.tags || []).some(tag => tag.toLowerCase().includes(search));
+        return nameMatch || symbolMatch || slugMatch || tagsMatch;
+      });
+    }
+
+    // Filter by category (tag)
+    if (category && category !== 'all') {
+      tokens = tokens.filter(token =>
+        (token.tags || []).some(tag => tag.toLowerCase() === category.toLowerCase())
+      );
+    }
+
+    // Helper function to get minimum fee from APIs (in USDC)
+    const getMinFeeUsdc = (token: any): number => {
+      if (!token.apis || token.apis.length === 0) return 0;
+      const fees = token.apis.map((api: any) => {
+        const feeRaw = parseFloat(api.fee || '0');
+        return feeRaw / 1e6; // Convert from 6 decimals to USDC
+      });
+      return Math.min(...fees);
+    };
+
+    // Filter by price range
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      tokens = tokens.filter(token => {
+        const minFee = getMinFeeUsdc(token);
+        if (minPrice !== undefined && minFee < minPrice) return false;
+        if (maxPrice !== undefined && minFee > maxPrice) return false;
+        return true;
+      });
+    }
+
+    // Sort tokens
+    switch (sortBy) {
+      case 'trending':
+        tokens.sort((a, b) => {
+          const countA = parseInt(a.subscriptionCount || '0');
+          const countB = parseInt(b.subscriptionCount || '0');
+          return countB - countA;
+        });
+        break;
+      case 'newest':
+        tokens.sort((a, b) => {
+          const dateA = new Date(a.createdAt || 0).getTime();
+          const dateB = new Date(b.createdAt || 0).getTime();
+          return dateB - dateA;
+        });
+        break;
+      case 'price-low':
+        tokens.sort((a, b) => getMinFeeUsdc(a) - getMinFeeUsdc(b));
+        break;
+      case 'price-high':
+        tokens.sort((a, b) => getMinFeeUsdc(b) - getMinFeeUsdc(a));
+        break;
+      default:
+        // Default to trending
+        tokens.sort((a, b) => {
+          const countA = parseInt(a.subscriptionCount || '0');
+          const countB = parseInt(b.subscriptionCount || '0');
+          return countB - countA;
+        });
+    }
+
+    // Get total count before pagination
+    const total = tokens.length;
+
+    // Apply pagination
+    const paginatedTokens = tokens.slice(offset, offset + limit);
+
     // Sanitize tokens to hide builder endpoints
-    const sanitizedServers = tokens.map(token => ({
+    const sanitizedServers = paginatedTokens.map(token => ({
       id: token.id,
       slug: token.slug,
       name: token.name,
@@ -1453,11 +1777,18 @@ app.get('/api/servers', async (req, res) => {
       chainType: token.chainId ? getChainTypeFromId(token.chainId) : "evm",
       createdAt: token.createdAt,
       updatedAt: token.updatedAt,
-    }))
+    }));
+
     return res.status(200).json({
       success: true,
-      count: sanitizedServers.length,
-      servers: sanitizedServers
+      servers: sanitizedServers,
+      pagination: {
+        total,
+        limit,
+        offset,
+        count: sanitizedServers.length,
+        hasMore: offset + limit < total,
+      },
     })
   } catch (error: any) {
     console.error("Error fetching all servers:", error)
@@ -1950,22 +2281,44 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           ? "solana:devnet"
           : `eip155:${baseSepolia.id}`
 
+        // Build the full x402 V2 response
+        const baseUrl = `${req.protocol}://${req.get('host')}`
+        const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
+
         return res.status(402).json({
-          error: "Payment required",
-          message: "This endpoint requires payment. Please provide PAYMENT-SIGNATURE header (x402 V2).",
           x402Version: 2,
-          chainType: serverChainType,
+          error: "Payment required",
           accepts: [{
             scheme: "exact",
             network: networkFormat,
-            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,  // Solana pays directly to token
+            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,
             asset: tokenEntry.paymentToken,
-            maxAmountRequired: api.fee,
+            amount: api.fee,
+            maxTimeoutSeconds: 300,
+            extra: {
+              finalRecipient: tokenEntry.id,
+              serverSlug: serverSlug,
+              apiSlug: apiSlug,
+            },
           }],
-          // Include final recipient for reference
-          finalRecipient: tokenEntry.id,
-          serverSlug: serverSlug,
-          apiSlug: apiSlug,
+          resource: {
+            url: resourceUrl,
+            description: api.description || `${tokenEntry.name} - ${api.name}`,
+            mimeType: "application/json",
+          },
+          extensions: {
+            bazaar: {
+              info: {
+                input: {},
+                output: { success: true, data: {} },
+              },
+              schema: {
+                type: "object",
+                properties: {},
+                required: [],
+              },
+            },
+          },
         })
       }
       
@@ -2014,17 +2367,31 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           console.log(`   Amount: ${auth.amount}`)
         } catch (solanaErr: any) {
           console.error("❌ Solana payment validation failed:", solanaErr.message)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
           return res.status(402).json({
-            error: "Invalid payment authorization",
-            message: solanaErr.message || "Solana payment authorization is invalid",
             x402Version: 2,
+            error: solanaErr.message || "Solana payment authorization is invalid",
             accepts: [{
               scheme: "exact",
               network: "solana:devnet",
               payTo: tokenEntry.id,
               asset: tokenEntry.paymentToken,
-              maxAmountRequired: api.fee,
+              amount: api.fee,
+              maxTimeoutSeconds: 300,
+              extra: { finalRecipient: tokenEntry.id },
             }],
+            resource: {
+              url: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              mimeType: "application/json",
+            },
+            extensions: {
+              bazaar: {
+                info: { input: {}, output: { success: true, data: {} } },
+                schema: { type: "object", properties: {}, required: [] },
+              },
+            },
           })
         }
       } else {
@@ -2039,17 +2406,31 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
         if (!verifyResult.valid) {
           console.error("❌ Payment authorization invalid:", verifyResult.error)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
           return res.status(402).json({
-            error: "Invalid payment authorization",
-            message: verifyResult.error || "Payment authorization is invalid",
             x402Version: 2,
+            error: verifyResult.error || "Payment authorization is invalid",
             accepts: [{
               scheme: "exact",
-              network: `eip155:${baseSepolia.id}`, // CAIP-2 format (V2)
-              payTo: tokenEntry.id,
+              network: `eip155:${baseSepolia.id}`,
+              payTo: facilitatorAddress,
               asset: tokenEntry.paymentToken,
-              maxAmountRequired: api.fee,
+              amount: api.fee,
+              maxTimeoutSeconds: 300,
+              extra: { finalRecipient: tokenEntry.id },
             }],
+            resource: {
+              url: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              mimeType: "application/json",
+            },
+            extensions: {
+              bazaar: {
+                info: { input: {}, output: { success: true, data: {} } },
+                schema: { type: "object", properties: {}, required: [] },
+              },
+            },
           })
         }
       }
@@ -2305,6 +2686,9 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     // STEP 3: Builder succeeded - NOW execute the payment
     console.log("✅ Builder returned success - NOW executing payment to token address")
     
+    // Variable to capture transaction hash from payment (used in response)
+    let settledTxHash: string | undefined = undefined
+
     if (thirdwebClient && paymentData) {
       try {
         // Solana payment settlement
@@ -2391,6 +2775,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
             solanaPaymentSuccess = true
             solanaTxSignature = signature
+            settledTxHash = signature  // Capture for response
           } catch (solanaSettleErr: any) {
             console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
 
@@ -2407,19 +2792,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
             })
           }
 
-          // Record metrics for Solana
-          if (metricsService && solanaPaymentSuccess) {
-            const latencyMs = Date.now() - requestStartTime
-            metricsService.recordApiCall(
-              tokenEntry.id,
-              apiSlug,
-              api.fee,
-              true, // success
-              latencyMs
-            ).catch(err => {
-              console.error("⚠️  Failed to record metrics:", err)
-            })
-          }
+          // Metrics for Solana will be recorded in the async post-payment block below
         } else {
           // EVM payment settlement via Thirdweb
           console.log("Executing EVM payment transfer:", {
@@ -2457,61 +2830,64 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           }
 
           console.log("✅ Payment executed successfully:", paymentResult.txHash)
-
-          // Record metrics for EVM (latency, success, revenue)
-          if (metricsService) {
-            const latencyMs = Date.now() - requestStartTime
-            metricsService.recordApiCall(
-              tokenEntry.id,
-              apiSlug,
-              api.fee,
-              true, // success
-              latencyMs
-            ).catch(err => {
-              console.error("⚠️  Failed to record metrics:", err)
-            })
-          }
+          settledTxHash = paymentResult.txHash  // Capture for response
         } // end else (EVM payment)
 
-        // STEP 4: Update subscription count and request queue (for both Solana and EVM)
-        console.log(`📊 STEP 4: Updating subscription count and fees...`)
-        console.log(`   userRequestService initialized: ${!!userRequestService}`)
-        console.log(`   paymentData present: ${!!paymentData}`)
-
-        if (userRequestService && paymentData) {
+        // STEP 4: Fire-and-forget post-payment processing
+        // These updates happen async to reduce response latency
+        const postPaymentLatencyMs = Date.now() - requestStartTime
+        setImmediate(async () => {
+          console.log(`📊 STEP 4 (async): Post-payment processing...`)
           try {
-            const userAddress = extractUserAddressFromPayment(paymentData)
-            console.log(`   Extracted userAddress: ${userAddress}`)
-            console.log(`   dynamoDBService initialized: ${!!dynamoDBService}`)
+            // Record metrics (async)
+            if (metricsService) {
+              await metricsService.recordApiCall(
+                tokenEntry.id,
+                apiSlug,
+                api.fee,
+                true, // success
+                postPaymentLatencyMs
+              )
+            }
 
-            if (userAddress && dynamoDBService) {
-              const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
-              if (tokenDBEntry) {
-                const currentSubscriptionCount = BigInt(tokenDBEntry.subscriptionCount || "0")
-                const globalRequestNumber = (currentSubscriptionCount + BigInt(1)).toString()
+            // Update subscription count and request queue
+            if (userRequestService && paymentData && dynamoDBService) {
+              const userAddress = extractUserAddressFromPayment(paymentData)
+              if (userAddress) {
+                const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
+                if (tokenDBEntry) {
+                  const currentSubscriptionCount = BigInt(tokenDBEntry.subscriptionCount || "0")
+                  const globalRequestNumber = (currentSubscriptionCount + BigInt(1)).toString()
 
-                await userRequestService.createRequestQueueEntry(
-                  tokenEntry.id,
-                  userAddress,
-                  globalRequestNumber,
-                  api.fee // Pass API-specific fee
-                )
-
-                const newSubscriptionCount = (currentSubscriptionCount + BigInt(1)).toString()
-
-                const updatedTokenEntry: IAOTokenDBEntry = {
-                  ...tokenDBEntry,
-                  subscriptionCount: newSubscriptionCount,
-                  updatedAt: new Date().toISOString(),
+                  // Create request queue entry and update subscription count in parallel
+                  await Promise.all([
+                    userRequestService.createRequestQueueEntry(
+                      tokenEntry.id,
+                      userAddress,
+                      globalRequestNumber,
+                      api.fee
+                    ),
+                    (async () => {
+                      const newSubscriptionCount = (currentSubscriptionCount + BigInt(1)).toString()
+                      const updatedTokenEntry: IAOTokenDBEntry = {
+                        ...tokenDBEntry,
+                        subscriptionCount: newSubscriptionCount,
+                        updatedAt: new Date().toISOString(),
+                      }
+                      await dynamoDBService.putItem(updatedTokenEntry)
+                      await invalidateCache(CacheKeys.SERVER_BY_SLUG(tokenEntry.slug))
+                      console.log(`✅ Updated subscriptionCount: ${newSubscriptionCount}`)
+                    })()
+                  ])
                 }
-                await dynamoDBService.putItem(updatedTokenEntry)
-                console.log(`✅ Updated subscriptionCount: ${newSubscriptionCount}`)
               }
             }
-          } catch (queueError: any) {
-            console.error("⚠️  Failed to update request queue:", queueError)
+            console.log(`✅ Post-payment processing completed`)
+          } catch (postPaymentError: any) {
+            console.error("⚠️  Post-payment processing error (non-blocking):", postPaymentError)
+            // TODO: Add to retry queue for failed post-payment updates
           }
-        }
+        })
       } catch (paymentError: any) {
         console.error("❌ Payment settlement error:", paymentError)
         // Return data but indicate payment failed
@@ -2529,18 +2905,21 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
 
     // STEP 5: Return successful response with data
     console.log("✅ Returning successful response with payment confirmed")
-    
+
     // Set x402 V2 response header
     res.setHeader('PAYMENT-RESPONSE', 'paid')
-    
-    res.status(builderResponse.status).setHeader('Content-Type', 'application/json; charset=utf-8').json({
+
+    // Build response object
+    const responseObject: any = {
       data: parsedData,
       x402Version: 2,
       payment: {
         status: "paid",
         tokenAddress: tokenEntry.id,
         paymentToken: tokenEntry.paymentToken,
-        charged: true
+        charged: true,
+        // Include transaction hash if available (from EVM or Solana payment)
+        ...(settledTxHash && { txHash: settledTxHash })
       },
       proxy: {
         serverSlug: serverSlug,
@@ -2548,7 +2927,59 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
         apiName: api.name,
         timestamp: new Date().toISOString()
       }
-    })
+    }
+
+    // Handle 202 Accepted - async operation started
+    // Automatically poll for the result before returning to client
+    if (builderResponse.status === 202) {
+      console.log("⏳ Builder returned 202 Accepted - starting automatic polling")
+
+      // Extract status URL from response or Location header
+      const statusUrl = parsedData?.statusUrl
+        || parsedData?.status_url
+        || builderResponse.headers.get('Location')
+
+      if (statusUrl) {
+        // Poll for the final result
+        const pollResult = await pollForProxyResult(statusUrl, api.apiUrl)
+
+        if (pollResult.success) {
+          // Return the completed result
+          responseObject.data = pollResult.result
+          responseObject.async = {
+            wasAsync: true,
+            jobId: parsedData?.jobId || parsedData?.job_id,
+            message: "Async operation completed successfully"
+          }
+          console.log("✅ Async operation completed - returning final result")
+          console.log("📤 Response data:", JSON.stringify(responseObject.data, null, 2))
+          res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
+          return
+        } else {
+          // Polling failed or timed out
+          responseObject.data = parsedData
+          responseObject.async = {
+            isAsync: true,
+            statusUrl: statusUrl,
+            jobId: parsedData?.jobId || parsedData?.job_id,
+            error: pollResult.error,
+            message: "Async operation did not complete in time. You can manually poll the statusUrl for the result."
+          }
+          console.log("⚠️ Async polling failed:", pollResult.error)
+          return res.status(pollResult.status).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
+        }
+      } else {
+        // No status URL provided - return 202 as-is
+        responseObject.data = parsedData
+        responseObject.async = {
+          isAsync: true,
+          message: "API returned 202 but no status URL was provided for polling."
+        }
+        console.log("⚠️ No status URL in 202 response - cannot poll")
+      }
+    }
+
+    res.status(builderResponse.status).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
 
     console.log("Payment settled for API - automation should mint rewards", {
       tokenAddress: tokenEntry.id,
@@ -2595,7 +3026,7 @@ app.post('/api/agents', async (req, res) => {
       return res.status(503).json({ error: "Agent service not initialized" })
     }
 
-    const { name, description, creator, llmProvider, availableTools, starterPrompts, isPublic } = req.body
+    const { name, description, systemInstructions, creator, llmProvider, availableTools, starterPrompts, isPublic } = req.body
 
     // Validation
     if (!name || !description || !creator || !llmProvider || !availableTools || !starterPrompts) {
@@ -2623,9 +3054,17 @@ app.post('/api/agents', async (req, res) => {
       })
     }
 
+    // Validate systemInstructions if provided (optional, max 2000 chars)
+    if (systemInstructions && typeof systemInstructions === 'string' && systemInstructions.length > 2000) {
+      return res.status(400).json({
+        error: "systemInstructions must be 2000 characters or less"
+      })
+    }
+
     const params: CreateAgentParams = {
       name,
       description,
+      systemInstructions: systemInstructions?.trim() || undefined,
       creator,
       llmProvider,
       availableTools,
@@ -2835,15 +3274,6 @@ app.get('/api/agents/:id/metrics', async (req, res) => {
   }
 })
 
-// Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
-// NOTE: Must be defined AFTER all specific /api/* routes
-app.get('/api/:serverSlug/:apiSlug', async (req, res) => {
-  const serverSlug = req.params.serverSlug.toLowerCase()
-  const apiSlug = req.params.apiSlug.toLowerCase()
-
-  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
-})
-
 /**
  * CHAT ENDPOINTS
  */
@@ -2961,7 +3391,7 @@ app.post('/api/chat/message', async (req, res) => {
     }
 
     // Save user message
-    const userMessage = await chatSessionService.saveMessage(
+    const saveResult = await chatSessionService.saveMessage(
       sessionId,
       'user',
       content
@@ -2970,7 +3400,9 @@ app.post('/api/chat/message', async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Message received. Streaming response...",
-      data: userMessage
+      data: saveResult.message,
+      // Include images to store in IndexedDB if content had large images
+      imagesToStore: saveResult.imagesToStore
     })
   } catch (error: any) {
     console.error("Error saving message:", error)
@@ -3070,7 +3502,8 @@ RULES:
 3. NEVER output raw XML, JSON, or function definitions to the user
 4. NEVER list tools with their technical names or schemas
 5. If a tool fails with 402 error, briefly explain the API requires payment
-6. Be natural - respond like a helpful assistant, not a technical manual`
+6. Be natural - respond like a helpful assistant, not a technical manual
+7. For POST APIs (marked with [POST]): ALWAYS ask the user for the request body/payload BEFORE calling. Never send empty or made-up data.`
 
     console.log(`🎮 Playground: Processing message with ${tools.length} tools`)
     console.log(`🔧 Tools passed to LLM:`, tools.map(t => t.name))
@@ -3154,6 +3587,7 @@ RULES:
             displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
             tokenAddress: apiInfo.tokenAddress,
             description: apiInfo.description,
+            method: apiInfo.method, // HTTP method (GET or POST)
             input: toolCall.input // Include the tool input so frontend can use it
           })
 
@@ -3204,8 +3638,37 @@ app.get('/api/chat/stream/:sessionId', async (req, res) => {
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders()
 
+    /**
+     * Send an SSE event to the client
+     *
+     * Supported event types:
+     * - 'text': Text chunk from LLM response
+     * - 'payment_option': Tool requires payment, includes API info and fee
+     * - 'tool_start': Tool execution is starting
+     * - 'tool_result': Tool execution completed with result
+     * - 'async_status': Status update for async/long-running operations
+     *   - data.status: 'started' | 'polling' | 'completed' | 'failed'
+     *   - data.toolName: Name of the async tool
+     *   - data.message: Human-readable status message
+     *   - data.estimatedTime: (optional) Estimated seconds remaining
+     * - 'error': Error occurred
+     * - 'warning': Non-fatal warning
+     * - 'end': Stream completed
+     */
     const sendEvent = (type: string, data: any) => {
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`)
+    }
+
+    // Helper to send async operation status updates
+    // Used when an API returns 202 and requires polling
+    const sendAsyncStatus = (status: 'started' | 'polling' | 'completed' | 'failed', toolName: string, message: string, estimatedTime?: number) => {
+      sendEvent('async_status', {
+        status,
+        toolName,
+        message,
+        estimatedTime,
+        timestamp: new Date().toISOString()
+      })
     }
 
     // Step 1: Get the session
@@ -3346,7 +3809,7 @@ ${tools.length > 0 ? tools.map(t => {
 - When you use a tool, the system will automatically show a payment button
 - After the user pays and you get the data, analyze and present it clearly
 
-📋 USING QUERY PARAMETERS:
+📋 USING QUERY PARAMETERS (GET APIs):
 - Many APIs require query parameters (e.g., ?base=USD, ?latitude=52.52&longitude=13.41)
 - Check the tool's usage examples for required/optional parameters
 - Pass query params in the "query" field as a plain string (e.g., "base=USD" or "latitude=52.52&longitude=13.41")
@@ -3354,9 +3817,20 @@ ${tools.length > 0 ? tools.map(t => {
 - When users ask questions, identify which query params to use from the context
 - If required params are missing, ASK the user for them before calling the tool
 
-EXAMPLE:
+📮 USING POST APIs (CRITICAL):
+- Some tools are marked with [POST] in their description - these require a JSON request body
+- For POST APIs, you MUST ask the user what data they want to send BEFORE calling the tool
+- NEVER call a POST API with an empty body or made-up data
+- The "body" field is REQUIRED for POST APIs - always ask the user to provide it
+- Example: "This API requires a request body. What data would you like to send? Please provide it in JSON format, like: {\"key\": \"value\"}"
+
+EXAMPLE (GET):
 User: "What's the EUR to USD exchange rate?"
 You: [Call tool with query="base=EUR"] or ask "Which currency would you like to convert from?"
+
+EXAMPLE (POST):
+User: "Use the POST API"
+You: "This API requires a request body. What data would you like to send? Please provide it as JSON, for example: {\"title\": \"foo\", \"body\": \"bar\"}"
 
 🚫 WHAT NOT TO DO:
 - Don't show <functions>, <function>, or any XML/JSON to users
@@ -3387,6 +3861,11 @@ User: "How do I lose weight?"
 You: "That's not something I can help with - I specialize in ${tools.length > 0 ? tools[0].name.replace('call_', '').replace(/_/g, ' ') : 'API data'}. Would you like to try that instead?"
 
 Remember: Be friendly in greetings/small talk, but redirect non-API questions to your actual capabilities.`
+
+    // Add custom system instructions if provided by the agent creator
+    if (agent.systemInstructions) {
+      systemPrompt += `\n\n📋 ADDITIONAL INSTRUCTIONS FROM AGENT CREATOR:\n${agent.systemInstructions}`
+    }
 
     // Add context if this is a response to payment result
     if (isPaymentResult) {
@@ -3470,7 +3949,9 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
               fee: apiInfo.fee,
               displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
               tokenAddress: apiInfo.tokenAddress,
-              description: apiInfo.description
+              description: apiInfo.description,
+              method: apiInfo.method, // HTTP method (GET or POST)
+              input: toolCall.input // Include the tool input for POST body
             })
 
             console.log(`💳 Payment option sent for ${toolCall.name}: ${apiInfo.name} (${AgentPaymentService.formatFeeForDisplay(apiInfo.fee)})`)
@@ -3497,7 +3978,16 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
     // Step 7: Save the assistant message to the session
     if (!hasError && assistantMessage) {
       try {
-        await chatSessionService.saveMessage(sessionId, 'assistant', assistantMessage)
+        const saveResult = await chatSessionService.saveMessage(sessionId, 'assistant', assistantMessage)
+
+        // If there are images to store locally, send SSE event to frontend
+        if (saveResult.imagesToStore && saveResult.imagesToStore.length > 0) {
+          sendEvent('store_images', {
+            messageId: saveResult.message.id,
+            images: saveResult.imagesToStore
+          })
+          console.log(`📸 Sent ${saveResult.imagesToStore.length} image(s) to frontend for local storage`)
+        }
 
         // Increment agent metrics
         await agentService.incrementMetric(agent.id, 'totalMessages')
@@ -3524,8 +4014,34 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
   }
 })
 
-// Start server if running directly (not in Vercel)
-if (process.env.NODE_ENV !== 'production') {
+/**
+ * API PROXY ROUTES
+ * IMPORTANT: These wildcard routes MUST be defined AFTER all specific /api/* routes
+ * Otherwise they will catch requests meant for /api/chat/*, /api/agents/*, etc.
+ */
+
+// Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
+// Rate limiters: per-IP, per-wallet, per-API endpoint
+app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
+// Handle POST requests for /api/:serverSlug/:apiSlug
+// Supports APIs that require JSON body input
+app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
+// Start server if running directly (not in Vercel serverless)
+// In Cloud Run, we ARE in production and need to start the server
+const isVercelServerless = process.env.VERCEL === '1'
+if (!isVercelServerless) {
   const PORT = process.env.PORT || 3000
   app.listen(PORT, () => {
     console.log(`🚀 Express server running on port ${PORT}`)
