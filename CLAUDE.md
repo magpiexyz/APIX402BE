@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 APIX (IAO - Initial API Offering) is a decentralized API marketplace that enables developers to monetize their APIs through a bonding curve token model. The system consists of three main components across separate repositories:
 
 - **Backend (this repo)**: Express.js proxy server that handles payment verification and request forwarding
-- **Frontend**: `/home/error0180/ui-vercel-2` - React/Vite application for API marketplace UI
+- **Frontend**: `/home/error0180/APIX402FE` - React/Vite application for API marketplace UI
 - **Smart Contracts**: `/home/error0180/hyperpie/contracts/IAO` - Solidity contracts for IAO token creation and bonding curve
 
 ### How It Works
@@ -37,7 +37,7 @@ yarn start
 
 ### Frontend (React/Vite)
 ```bash
-cd /home/error0180/ui-vercel-2
+cd /home/error0180/APIX402FE
 
 # Development server
 npm run dev
@@ -73,11 +73,11 @@ make deploy-lrt-testnet
 The proxy implements a "pay-after-success" model:
 
 1. **Request arrives** at `/api/:serverSlug/:apiSlug`
-2. **Lookup server** from DynamoDB by slug
+2. **Lookup server** from Firestore by slug
 3. **Verify payment authorization** (without settling) using `verifyPaymentAuthorization()`
 4. **Forward to builder endpoint** - Call actual API first
 5. **Settle payment** only if builder returns 2xx status via `executePaymentTransfer()`
-6. **Update metrics** and subscription counts in DynamoDB
+6. **Update metrics** in Firestore
 7. **Return response** to user with payment confirmation
 
 Key principle: Users are only charged if the API successfully returns data.
@@ -89,25 +89,55 @@ Key principle: Users are only charged if the API successfully returns data.
 - Thirdweb facilitator handles on-chain settlement
 - Users sign payment to facilitator address, which forwards to token address
 
-### Database Schema (DynamoDB)
+### Database Schema (Firestore)
 
-**Table: apix-iao-tokens** (token metadata)
-- `id` (PK): Token address (lowercase)
-- `slug` (GSI): Server slug (e.g., "magpie")
+**Collection: `iao-tokens`** - Token metadata
+- `id`: Token address (lowercase)
+- `slug`: Server slug (e.g., "magpie")
 - `apis[]`: Array of API endpoints with fees
 - `subscriptionCount`: Total API calls across all APIs
+- `chainId`: Blockchain network ID
 
-**Table: apix-iao-user-requests** (user call history)
-- `id` (PK): `{tokenAddress}#{userAddress}#{requestNumber}`
-- `iaoToken` (GSI): Token address for querying
+**Collection: `user-requests`** - User call history
+- Document ID: `{tokenAddress}_{userAddress}_{requestNumber}`
+- `iaoToken`: Token address for querying
+- `userAddress`: Caller's wallet address
+- `timestamp`: Request timestamp
 
-**Table: apix-iao-request-queue** (pending request queue)
-- `id` (PK): `{tokenAddress}#{userAddress}#{requestNumber}`
+**Collection: `request-queue`** - Pending request queue
+- Document ID: `{tokenAddress}_{userAddress}_{requestNumber}`
 - Used for automation to mint tokens after successful payments
 
-**Table: apix-iao-metrics** (API performance metrics)
-- `id` (PK): `{tokenAddress}#{apiSlug}`
+**Collection: `api-metrics`** - API performance metrics
+- Document ID: `{tokenAddress}_{apiSlug}`
 - Tracks success/failure rates, latency, revenue
+
+**Collection: `agents`** - AI agent configurations
+- Agent metadata and settings
+
+**Collection: `chat-sessions`** - Chat session tracking
+- Session metadata for agent interactions
+
+**Collection: `chat-messages`** - Chat message history
+- Individual messages within sessions
+
+**Collection: `agent-payments`** - Agent payment records
+- Payment tracking for agent usage
+
+**Collection: `cache`** - General caching layer
+- Short-lived cached data
+
+**Collection: `rate-limits`** - Rate limiting data
+- Per-user and per-API rate limit tracking
+
+**Collection: `chain-configs`** - Multi-chain configurations
+- Network-specific settings (RPC URLs, contract addresses)
+
+**Collection: `alerts`** - System alerting
+- Alert configurations and history
+
+**Collection: `webhooks`** - Webhook configurations
+- External notification endpoints
 
 ### Smart Contract Architecture
 
@@ -133,13 +163,14 @@ Key principle: Users are only charged if the API successfully returns data.
 
 ### Backend (.env)
 ```bash
+# GCP Configuration (required for Firestore)
+GCP_PROJECT_ID=your-gcp-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# Or use GCP_CREDENTIALS for inline JSON credentials
+
 # Thirdweb x402 facilitator (required for payments)
 THIRDWEB_SECRET_KEY=sk_...
 THIRDWEB_SERVER_WALLET_ADDRESS=0x...
-
-# DynamoDB configuration
-DYNAMODB_REGION=us-west-1
-DYNAMODB_ENDPOINT=http://localhost:8000  # Local testing only
 
 # JWT authentication for builder endpoints
 BUILDER_SECRET_PHRASE=your-shared-secret
@@ -165,10 +196,20 @@ ETHERSCAN_API_KEY=...
 ## Key Files
 
 ### Backend
-- `src/index.ts` - Main Express server with all API routes (2165 lines, monolithic)
-- `src/services/dynamoDBService.ts` - DynamoDB CRUD operations for IAO tokens
-- `src/services/userRequestService.ts` - Request queue and user history management
-- `src/services/metricsService.ts` - API call metrics tracking
+- `src/index.ts` - Main Express server with all API routes
+- `src/db/firestoreClient.ts` - Firestore database client initialization
+- `src/services/firestoreTokenService.ts` - Token CRUD operations
+- `src/services/firestoreUserRequestService.ts` - Request queue and user history
+- `src/services/firestoreMetricsService.ts` - API call metrics tracking
+- `src/services/firestoreAgentService.ts` - AI agent management
+- `src/services/firestoreChatSessionService.ts` - Chat session management
+- `src/services/firestoreAgentPaymentService.ts` - Agent payment tracking
+- `src/services/firestoreCacheService.ts` - Caching layer
+- `src/services/firestoreRateLimitService.ts` - Rate limiting
+- `src/services/firestoreChainConfigService.ts` - Multi-chain configuration
+- `src/services/firestoreAlertingService.ts` - Alerting system
+- `src/middleware/rateLimiter.ts` - Rate limiting middleware
+- `src/services/circuitBreaker.ts` - Circuit breaker for fault tolerance
 - `src/utils/jwtAuth.ts` - JWT generation for builder authentication
 - `abis/IAOToken.json` - ABI for reading on-chain token state
 - `abis/IAOTokenFactory.json` - ABI for factory contract
@@ -192,7 +233,7 @@ ETHERSCAN_API_KEY=...
 2. Backend validates slug availability, API URLs are reachable (200 status), no duplicates
 3. Frontend creates token via `IAOTokenFactory.createToken()`
 4. Frontend calls `POST /api/register` again with `tokenAddress` (registration mode)
-5. Backend stores token metadata in DynamoDB
+5. Backend stores token metadata in Firestore
 
 ### Payment Authorization (x402 V2)
 - Payment signature must be to **facilitator address**, not token address
@@ -214,19 +255,20 @@ ETHERSCAN_API_KEY=...
 
 ## Testing & Debugging
 
-### Check DynamoDB Tables (Local)
+### Firestore Emulator (Local Development)
 ```bash
-# Scan all servers
-aws dynamodb scan --endpoint-url http://localhost:8000 --table-name apix-iao-tokens | jq
+# Start Firebase emulator suite
+firebase emulators:start
 
-# Get server by slug
-aws dynamodb query \
-  --endpoint-url http://localhost:8000 \
-  --table-name apix-iao-tokens \
-  --index-name slug-index \
-  --key-condition-expression "slug = :slug" \
-  --expression-attribute-values '{":slug": {"S": "magpie"}}'
+# Emulator UI available at http://localhost:4000
+# Firestore emulator runs on http://localhost:8080
 ```
+
+### Firestore Console (Production)
+Access the [Firebase Console](https://console.firebase.google.com) to:
+- Browse collections and documents
+- Run queries
+- Monitor usage and performance
 
 ### Test API Endpoints
 ```bash
@@ -250,6 +292,39 @@ curl http://localhost:3000/api/metrics/magpie | jq
 
 **"Server slug already taken"**: Slug must be unique globally - each slug maps to one IAO token
 
+**"Firestore permission denied"**: Check that `GOOGLE_APPLICATION_CREDENTIALS` points to valid service account JSON
+
+## GCP Deployment
+
+### Backend (Cloud Run)
+```bash
+# Build and deploy to Cloud Run
+gcloud run deploy apix-backend \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=your-project"
+
+# View logs
+gcloud run services logs read apix-backend --region us-central1
+```
+
+### Frontend (Firebase Hosting)
+```bash
+cd /home/error0180/APIX402FE
+
+# Build production bundle
+npm run build
+
+# Deploy to Firebase Hosting
+firebase deploy --only hosting
+```
+
+### CI/CD with Cloud Build
+- Push to `main` branch triggers automatic deployment
+- Cloud Build configuration in `cloudbuild.yaml`
+- Secrets managed via Secret Manager
+
 ## Contract Addresses (Base Sepolia)
 
 - **IAOTokenFactory**: `0x5a40F7f30b25D07aB1C06dEB7400554Bc20f8ad4`
@@ -257,7 +332,8 @@ curl http://localhost:3000/api/metrics/magpie | jq
 
 ## Documentation References
 
+- Architecture Overview: `docs/ARCHITECTURE.md`
+- GCP Deployment Guide: `docs/GCP_DEPLOYMENT.md`
+- Firestore Schema: `docs/FIRESTORE_SCHEMA.md`
 - Builder JWT Authentication: `BUILDER_JWT_AUTH.md`
 - Thirdweb Facilitator Setup: `THIRDWEB_SETUP.md`
-- DynamoDB Query Examples: `QUERY_DYNAMODB.md`
-- Table Creation Scripts: `CREATE_DYNAMODB_TABLES.sh`
