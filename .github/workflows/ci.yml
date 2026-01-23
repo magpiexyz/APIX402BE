@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/*, fix/*, develop]
+    branches: [main]  # Only run on direct pushes to main
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop]  # Run on all PRs to main/develop
 
 jobs:
   test:
