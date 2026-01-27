@@ -853,7 +853,8 @@ app.post('/api/test-endpoint', async (req, res) => {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
-    const fetchOptions: RequestInit = {
+    // Build fetch options - using any to avoid node-fetch type conflicts
+    const fetchOptions: any = {
       method: validMethod,
       headers: {
         'User-Agent': 'IAO-Proxy/1.0 (API Test)',
