@@ -947,25 +947,29 @@ app.post('/api/register', async (req, res) => {
         }
 
         // Validate API endpoint returns 200 status code
+        // Use the API's specified method (GET or POST) for validation
+        const validationMethod = api.method || 'GET'
         try {
           const controller = new AbortController()
           const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
-          
+
           const response = await fetch(api.apiUrl, {
-            method: 'GET',
+            method: validationMethod,
             headers: {
               'User-Agent': 'IAO-Proxy/1.0',
               'Accept': 'application/json, */*',
+              'Content-Type': 'application/json',
             },
+            body: validationMethod === 'POST' ? JSON.stringify({}) : undefined,
             signal: controller.signal,
           })
-          
+
           clearTimeout(timeoutId)
-          
+
           if (response.status !== 200 && response.status !== 202) {
             return res.status(400).json({
               error: "API endpoint validation failed",
-              message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
+              message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202 for ${validationMethod} request. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
             })
           }
         } catch (fetchError: any) {
@@ -1172,25 +1176,29 @@ app.post('/api/register', async (req, res) => {
       }
 
       // Validate API endpoint returns 200 status code (only in registration mode)
+      // Use the API's specified method (GET or POST) for validation
+      const validationMethod = api.method || 'GET'
       try {
         const controller = new AbortController()
         const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
-        
+
         const response = await fetch(api.apiUrl, {
-          method: 'GET',
+          method: validationMethod,
           headers: {
             'User-Agent': 'IAO-Proxy/1.0',
             'Accept': 'application/json, */*',
+            'Content-Type': 'application/json',
           },
+          body: validationMethod === 'POST' ? JSON.stringify({}) : undefined,
           signal: controller.signal,
         })
-        
+
         clearTimeout(timeoutId)
 
         if (response.status !== 200 && response.status !== 202) {
           return res.status(400).json({
             error: "API endpoint validation failed",
-            message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
+            message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202 for ${validationMethod} request. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
           })
         }
       } catch (fetchError: any) {
@@ -1360,25 +1368,28 @@ app.post('/api/add-api', async (req, res) => {
     }
 
     // Validate API endpoint returns 200 status code
+    // Use the API's specified method (GET or POST) for validation
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
-      
+
       const response = await fetch(apiUrl, {
-        method: 'GET',
+        method: method,
         headers: {
           'User-Agent': 'IAO-Proxy/1.0',
           'Accept': 'application/json, */*',
+          'Content-Type': 'application/json',
         },
+        body: method === 'POST' ? JSON.stringify({}) : undefined,
         signal: controller.signal,
       })
-      
+
       clearTimeout(timeoutId)
-      
+
       if (response.status !== 200 && response.status !== 202) {
         return res.status(400).json({
           error: "API endpoint validation failed",
-          message: `API endpoint (${apiUrl}) returned status code ${response.status} instead of 200/202. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
+          message: `API endpoint (${apiUrl}) returned status code ${response.status} instead of 200/202 for ${method} request. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
         })
       }
     } catch (fetchError: any) {
