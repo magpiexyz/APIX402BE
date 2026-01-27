@@ -1316,7 +1316,7 @@ app.post('/api/register', async (req, res) => {
         fee: api.fee,
         method: api.method || 'GET',  // Default to GET if not specified
         parameters: api.parameters || [],
-        responseFormat: api.responseFormat?.trim() || undefined,
+        responseFormat: api.responseFormat?.trim() || '',
         createdAt: now,
       })
     }
