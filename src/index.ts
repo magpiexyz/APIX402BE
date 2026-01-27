@@ -789,12 +789,158 @@ async function executePaymentTransfer(
 }
 
 /**
+ * POST /api/test-endpoint - Test an API endpoint before registration
+ *
+ * Allows builders to test their API endpoints with custom request body
+ * before submitting for registration. This replaces automatic validation.
+ *
+ * Request body:
+ * {
+ *   url: string (API endpoint URL),
+ *   method: "GET" | "POST" (HTTP method),
+ *   body?: object (optional request body for POST requests),
+ *   queryParams?: string (optional query string for GET requests)
+ * }
+ *
+ * Response:
+ * {
+ *   success: boolean,
+ *   statusCode: number,
+ *   statusText: string,
+ *   responseTime: number (ms),
+ *   headers: object,
+ *   data: any (response body, truncated if too large)
+ * }
+ */
+app.post('/api/test-endpoint', async (req, res) => {
+  const { url, method = 'GET', body, queryParams } = req.body
+
+  // Validate required fields
+  if (!url) {
+    return res.status(400).json({
+      error: "Missing URL",
+      message: "Please provide the API endpoint URL to test"
+    })
+  }
+
+  // Validate URL format
+  let testUrl: URL
+  try {
+    testUrl = new URL(url)
+    // Append query params if provided
+    if (queryParams && method === 'GET') {
+      const separator = testUrl.search ? '&' : '?'
+      testUrl = new URL(url + separator + queryParams)
+    }
+  } catch {
+    return res.status(400).json({
+      error: "Invalid URL",
+      message: "Please provide a valid URL"
+    })
+  }
+
+  // Validate method
+  const validMethod = (method || 'GET').toUpperCase()
+  if (validMethod !== 'GET' && validMethod !== 'POST') {
+    return res.status(400).json({
+      error: "Invalid method",
+      message: "Method must be GET or POST"
+    })
+  }
+
+  try {
+    const startTime = Date.now()
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
+    const fetchOptions: RequestInit = {
+      method: validMethod,
+      headers: {
+        'User-Agent': 'IAO-Proxy/1.0 (API Test)',
+        'Accept': 'application/json, */*',
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    }
+
+    // Add body for POST requests
+    if (validMethod === 'POST' && body) {
+      fetchOptions.body = JSON.stringify(body)
+    }
+
+    const response = await fetch(testUrl.toString(), fetchOptions)
+    clearTimeout(timeoutId)
+
+    const responseTime = Date.now() - startTime
+
+    // Get response headers
+    const headers: Record<string, string> = {}
+    response.headers.forEach((value, key) => {
+      headers[key] = value
+    })
+
+    // Try to parse response body
+    let responseData: any = null
+    const contentType = response.headers.get('content-type') || ''
+
+    try {
+      const textBody = await response.text()
+      // Truncate if too large (max 10KB for display)
+      const truncatedBody = textBody.length > 10240
+        ? textBody.substring(0, 10240) + '... [truncated]'
+        : textBody
+
+      if (contentType.includes('application/json')) {
+        try {
+          responseData = JSON.parse(truncatedBody)
+        } catch {
+          responseData = truncatedBody
+        }
+      } else {
+        responseData = truncatedBody
+      }
+    } catch {
+      responseData = '[Unable to read response body]'
+    }
+
+    return res.status(200).json({
+      success: response.ok,
+      statusCode: response.status,
+      statusText: response.statusText,
+      responseTime,
+      headers,
+      data: responseData,
+      testedUrl: testUrl.toString(),
+      method: validMethod,
+    })
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return res.status(200).json({
+        success: false,
+        error: "Timeout",
+        message: "The API endpoint did not respond within 30 seconds",
+        testedUrl: testUrl.toString(),
+        method: validMethod,
+      })
+    }
+
+    return res.status(200).json({
+      success: false,
+      error: "Connection failed",
+      message: error.message || "Failed to connect to the API endpoint",
+      testedUrl: testUrl.toString(),
+      method: validMethod,
+    })
+  }
+})
+
+/**
  * POST /api/register - Register a new IAO token with one or more API endpoints
- * 
+ *
  * This endpoint can be called in two modes:
  * 1. VALIDATION MODE (tokenAddress missing): Validates data BEFORE transaction signing
  * 2. REGISTRATION MODE (tokenAddress present): Stores token in DynamoDB AFTER transaction
- * 
+ *
  * Request body (validation mode):
  * {
  *   slug: string (server slug, e.g., "magpie"),
@@ -1175,45 +1321,8 @@ app.post('/api/register', async (req, res) => {
         })
       }
 
-      // Validate API endpoint returns 200 status code (only in registration mode)
-      // Use the API's specified method (GET or POST) for validation
-      const validationMethod = api.method || 'GET'
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
-
-        const response = await fetch(api.apiUrl, {
-          method: validationMethod,
-          headers: {
-            'User-Agent': 'IAO-Proxy/1.0',
-            'Accept': 'application/json, */*',
-            'Content-Type': 'application/json',
-          },
-          body: validationMethod === 'POST' ? JSON.stringify({}) : undefined,
-          signal: controller.signal,
-        })
-
-        clearTimeout(timeoutId)
-
-        if (response.status !== 200 && response.status !== 202) {
-          return res.status(400).json({
-            error: "API endpoint validation failed",
-            message: `API at index ${i} (${api.apiUrl}) returned status code ${response.status} instead of 200/202 for ${validationMethod} request. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
-          })
-        }
-      } catch (fetchError: any) {
-        if (fetchError.name === 'AbortError') {
-          return res.status(400).json({
-            error: "API endpoint timeout",
-            message: `API at index ${i} (${api.apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
-          })
-        }
-
-        return res.status(400).json({
-          error: "API endpoint validation failed",
-          message: `API at index ${i} (${api.apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 or 202 status code.`
-        })
-      }
+      // NOTE: Automatic API validation removed - builders should test their endpoints
+      // using the /api/test-endpoint route before submitting registration
 
       // Validate parameters array if provided
       if (api.parameters && Array.isArray(api.parameters)) {
