@@ -1215,6 +1215,27 @@ app.post('/api/register', async (req, res) => {
         })
       }
 
+      // Validate parameters array if provided
+      if (api.parameters && Array.isArray(api.parameters)) {
+        for (let j = 0; j < api.parameters.length; j++) {
+          const param = api.parameters[j]
+          if (!param.name || !param.type || typeof param.required !== 'boolean') {
+            return res.status(400).json({
+              error: "Invalid parameter",
+              message: `API "${apiSlug}": Parameter at index ${j} must have name, type, and required fields`
+            })
+          }
+          // Validate type is one of the allowed values
+          const validTypes = ['string', 'number', 'boolean', 'object', 'array']
+          if (!validTypes.includes(param.type)) {
+            return res.status(400).json({
+              error: "Invalid parameter type",
+              message: `API "${apiSlug}": Parameter "${param.name}" has invalid type "${param.type}". Must be one of: ${validTypes.join(', ')}`
+            })
+          }
+        }
+      }
+
       apiEntries.push({
         index: i,
         slug: apiSlug,
@@ -1223,6 +1244,8 @@ app.post('/api/register', async (req, res) => {
         description: api.description,
         fee: api.fee,
         method: api.method || 'GET',  // Default to GET if not specified
+        parameters: api.parameters || [],
+        responseFormat: api.responseFormat?.trim() || undefined,
         createdAt: now,
       })
     }
@@ -1617,6 +1640,84 @@ app.get('/api/server/:slug', async (req, res) => {
     return res.status(500).json({
       error: "Internal server error",
       message: error.message || "Failed to fetch server"
+    })
+  }
+})
+
+/**
+ * GET /api/server/:slug/agents - Get agents that use this server's APIs
+ *
+ * Returns public agents that have tools from this server in their availableTools.
+ * Agent tools are stored as "{serverSlug}/{apiSlug}" format.
+ *
+ * @param slug - Server slug (e.g., "magpie")
+ */
+app.get('/api/server/:slug/agents', async (req, res) => {
+  const serverSlug = req.params.slug.toLowerCase()
+
+  try {
+    // Verify server exists
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Check if agent service is available
+    if (!agentService) {
+      return res.status(503).json({
+        error: "Service not available",
+        message: "Agent service is not configured"
+      })
+    }
+
+    // Get all public agents
+    const allPublicAgents = await agentService.listAgents({ isPublic: true })
+
+    // Filter agents that have tools from this server
+    // Tool format is "{serverSlug}/{apiSlug}"
+    const agentsUsingThisServer = allPublicAgents.filter(agent =>
+      agent.availableTools && agent.availableTools.some(tool => tool.startsWith(`${serverSlug}/`))
+    )
+
+    // Get metrics for each agent and prepare response
+    const agentsWithMetrics = await Promise.all(
+      agentsUsingThisServer.map(async (agent) => {
+        const metrics = await agentService!.getAgentMetrics(agent.id)
+
+        // Extract which specific APIs from this server the agent uses
+        const toolsFromThisServer = agent.availableTools.filter(tool => tool.startsWith(`${serverSlug}/`))
+
+        return {
+          id: agent.id,
+          name: agent.name,
+          description: agent.description,
+          creator: agent.creator,
+          llmProvider: agent.llmProvider,
+          toolsFromThisServer,
+          metrics: metrics || {
+            totalMessages: 0,
+            totalUsers: 0,
+            totalToolCalls: 0,
+          },
+          createdAt: agent.createdAt,
+        }
+      })
+    )
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      agentCount: agentsWithMetrics.length,
+      agents: agentsWithMetrics,
+    })
+  } catch (error: any) {
+    console.error("Error fetching agents for server:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch agents"
     })
   }
 })

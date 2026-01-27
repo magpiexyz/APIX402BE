@@ -9,6 +9,17 @@ import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
 
 /**
+ * Parameter definition for structured API documentation
+ */
+export interface ApiParameter {
+  name: string;           // Parameter name (e.g., "userId")
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  required: boolean;
+  description: string;    // What this param does
+  example?: string;       // Example value
+}
+
+/**
  * Individual API entry within a token
  * Multiple APIs can be registered under a single token
  */
@@ -20,6 +31,8 @@ export interface ApiEntry {
   description: string;  // Required description
   fee: string;          // Fee in payment token smallest unit (e.g., "10000" = $0.01 USDC with 6 decimals)
   method?: 'GET' | 'POST';  // HTTP method (defaults to GET)
+  parameters?: ApiParameter[];     // Request params (query for GET, body for POST)
+  responseFormat?: string;         // Expected response format (JSON example)
   createdAt: string;    // ISO timestamp when this API was added
 }
 

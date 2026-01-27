@@ -56,6 +56,7 @@ export interface ServerMetrics {
   p95Latency: number; // 95th percentile latency across all APIs (ms)
   successRate: number; // Success rate percentage (0-100)
   apiCount: number; // Number of APIs
+  lastCallAt?: string; // Most recent API call timestamp (ISO string)
   perApiMetrics: {
     apiSlug: string;
     callCount: string;
@@ -64,6 +65,7 @@ export interface ServerMetrics {
     averageLatency: number;
     p95Latency: number;
     successRate: number;
+    lastCallAt?: string; // Most recent call timestamp for this API
   }[];
 }
 
@@ -367,8 +369,15 @@ class MetricsService {
           averageLatency: recentMetrics.averageLatency,
           p95Latency: recentMetrics.p95Latency,
           successRate: recentMetrics.successRate,
+          lastCallAt: metric.lastCallAt,
         };
       });
+
+      // Find the most recent call across all APIs
+      const lastCallAt = apiMetrics
+        .map(m => m.lastCallAt)
+        .filter(Boolean)
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || undefined;
 
       const totalCallsNum = Number(totalCalls);
       const averageLatency = totalCallsNum > 0
@@ -390,6 +399,7 @@ class MetricsService {
         p95Latency,
         successRate,
         apiCount: apiMetrics.length,
+        lastCallAt,
         perApiMetrics,
       };
     } catch (error) {
