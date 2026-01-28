@@ -41,6 +41,7 @@ export interface IAOTokenDBEntry {
   fulfilledCount: string;        // BigInt as string, default "0"
   totalFeesCollected?: string;   // BigInt as string - for Solana bonding progress tracking
   tags?: string[];               // Array of category tags (e.g., ["crypto", "trading"])
+  logoUrl?: string;              // Cloudinary URL for server logo
   apis: ApiEntry[];              // Array of registered APIs (each with own fee)
   createdAt: string;             // ISO timestamp
   updatedAt: string;             // ISO timestamp

@@ -3310,6 +3310,13 @@ cliui@^8.0.1:
     strip-ansi "^6.0.1"
     wrap-ansi "^7.0.0"
 
+cloudinary@^2.9.0:
+  version "2.9.0"
+  resolved "https://registry.yarnpkg.com/cloudinary/-/cloudinary-2.9.0.tgz#d644c06f1b8569890ca394e55717dd239c2b2ad0"
+  integrity sha512-F3iKMOy4y0zy0bi5JBp94SC7HY7i/ImfTPSUV07iJmRzH1Iz8WavFfOlJTR1zvYM/xKGoiGZ3my/zy64In0IQQ==
+  dependencies:
+    lodash "^4.17.21"
+
 clsx@1.2.1, clsx@^1.2.1:
   version "1.2.1"
   resolved "https://registry.yarnpkg.com/clsx/-/clsx-1.2.1.tgz#0ddc4a20a549b59c93a4116bb26f5294ca17dc12"
