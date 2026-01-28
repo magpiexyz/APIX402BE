@@ -893,6 +893,105 @@ app.post('/api/upload-logo', async (req, res) => {
 })
 
 /**
+ * POST /api/test-endpoint - Test an API endpoint before registration
+ *
+ * Request body:
+ * {
+ *   url: string,          // The API URL to test
+ *   method: 'GET' | 'POST', // HTTP method
+ *   body?: object,        // Request body for POST requests
+ *   queryParams?: string  // Query params for GET requests
+ * }
+ */
+app.post('/api/test-endpoint', async (req, res) => {
+  try {
+    const { url, method = 'GET', body, queryParams } = req.body
+
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing URL',
+        message: 'Please provide a URL to test'
+      })
+    }
+
+    // Build the full URL with query params for GET requests
+    let fullUrl = url
+    if (method === 'GET' && queryParams) {
+      const separator = url.includes('?') ? '&' : '?'
+      fullUrl = `${url}${separator}${queryParams}`
+    }
+
+    console.log(`🧪 Testing endpoint: ${method} ${fullUrl}`)
+
+    const startTime = Date.now()
+
+    // Set up request options
+    const fetchOptions: any = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    }
+
+    // Add body for POST requests
+    if (method === 'POST' && body) {
+      fetchOptions.body = JSON.stringify(body)
+    }
+
+    // Create abort controller for timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+    fetchOptions.signal = controller.signal
+
+    const response = await fetch(fullUrl, fetchOptions)
+    clearTimeout(timeoutId)
+
+    const responseTime = Date.now() - startTime
+
+    // Try to parse response as JSON, fall back to text
+    let responseData: any
+    const contentType = response.headers.get('content-type') || ''
+
+    if (contentType.includes('application/json')) {
+      responseData = await response.json()
+    } else {
+      const text = await response.text()
+      // Truncate long responses
+      responseData = text.length > 1000 ? text.substring(0, 1000) + '...' : text
+    }
+
+    console.log(`✅ Test completed: ${response.status} in ${responseTime}ms`)
+
+    return res.status(200).json({
+      success: response.ok,
+      statusCode: response.status,
+      responseTime,
+      data: responseData,
+      message: response.ok ? 'Endpoint is accessible' : `Endpoint returned ${response.status}`
+    })
+
+  } catch (error: any) {
+    console.error('❌ Test endpoint error:', error.message)
+
+    if (error.name === 'AbortError') {
+      return res.status(200).json({
+        success: false,
+        error: 'Timeout',
+        message: 'Request timed out after 30 seconds'
+      })
+    }
+
+    return res.status(200).json({
+      success: false,
+      error: error.code || 'Connection failed',
+      message: error.message || 'Failed to connect to endpoint'
+    })
+  }
+})
+
+/**
  * POST /api/register - Register a new IAO token with one or more API endpoints
  * 
  * This endpoint can be called in two modes:
