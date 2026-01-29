@@ -15,6 +15,8 @@ import bs58 from 'bs58'
 import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
 import { UserRequestService } from './services/firestoreUserRequestService.js'
 import { MetricsService } from './services/firestoreMetricsService.js'
+import { EarningsService } from './services/firestoreEarningsService.js'
+import { MerkleTreeService } from './services/firestoreMerkleTreeService.js'
 import { AgentService, CreateAgentParams } from './services/firestoreAgentService.js'
 import { ChatSessionService } from './services/firestoreChatSessionService.js'
 import { LLMService } from './services/llmService.js'
@@ -282,6 +284,23 @@ try {
 } catch (error) {
   console.error("⚠️  Failed to initialize Agent payment service:", error)
   console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
+}
+
+// Earnings Service initialization (Merkle claim distribution)
+let earningsService: EarningsService | null = null
+let merkleTreeService: MerkleTreeService | null = null
+try {
+  earningsService = new EarningsService()
+  console.log(`✅ Earnings service initialized (Collection: token-earnings)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Earnings service:", error)
+}
+
+try {
+  merkleTreeService = new MerkleTreeService()
+  console.log(`✅ MerkleTree service initialized (Collection: merkle-trees)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize MerkleTree service:", error)
 }
 
 // Chain Config Service initialization
@@ -2208,47 +2227,83 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
       ? getChainTypeFromId(tokenEntry.chainId)
       : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
 
+    // Check if this token uses Merkle distribution model (DB-tracked progress)
+    const tokenDBEntryForMetrics = dynamoDBService ? await dynamoDBService.getItem(tokenEntry.id) : null
+    const useMerkleMetrics = tokenDBEntryForMetrics?.distributionModel === 'merkle'
+
     // Only fetch EVM contract metrics for EVM tokens
     if (tokenChainType === "solana") {
       console.log(`⏭️  Solana bonding metrics for: ${tokenEntry.id}`)
 
-      // Solana bonding progress will be updated by automation when tokens are minted
-      // For now, return placeholder values - actual progress comes from on-chain Solana program
-      // TODO: Read totalTokensDistributed from Solana IAO program when available
-
       // Graduation threshold in tokens (625M tokens with 18 decimals) - matches EVM
       const tokenGraduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
 
-      // Placeholder: bonding progress will be updated when automation mints tokens
-      // The Solana program tracks totalTokensDistributed on-chain
-      const totalTokensDistributed = BigInt("0") // Will be read from Solana program
-      const bondingProgress = 0 // Will be calculated from on-chain data
+      // Read virtualTokensDistributed from DB for Merkle model, else placeholder
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
 
-      const isGraduated = false
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
 
       // Set payment token info for Solana (used for tokensPerCall calculation)
-      // Match EVM behavior: $0.01 fee → 250 tokens
-      // Formula: tokensPerCall = (fee * paymentTokenPrice) / 10^decimals
-      // 250 * 1e18 = (10,000 * paymentTokenPrice) / 1e6
-      // paymentTokenPrice = 25e21
-      paymentTokenPrice = BigInt("25000000000000000000000") // 25e21 - matches EVM pricing
-      paymentTokenDecimals = 6 // USDC has 6 decimals
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
 
       contractMetrics = {
         tokenAddress: tokenEntry.id,
         graduationThreshold: tokenGraduationThreshold.toString(),
         totalTokensDistributed: totalTokensDistributed.toString(),
-        totalFeesCollected: "0", // Not tracked in DynamoDB - automation handles minting
-        bondingProgress,
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
         isGraduated,
         chainType: "solana",
         paymentTokenPrice: paymentTokenPrice.toString(),
         paymentTokenDecimals,
-        note: "Bonding progress updated when automation mints tokens",
+        distributionModel: tokenDBEntryForMetrics?.distributionModel || "batch",
       }
 
-      console.log(`📊 Solana bonding metrics: awaiting automation to mint tokens`)
+      console.log(`📊 Solana bonding metrics: ${totalTokensDistributed.toString()} tokens distributed`)
+    } else if (useMerkleMetrics) {
+      // Merkle distribution model: read bonding progress from DB instead of on-chain
+      console.log(`📊 Fetching DB-tracked metrics for Merkle token: ${tokenEntry.id}`)
+
+      const tokenGraduationThreshold = BigInt("625000000000000000000000000")
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
+
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
+
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
+
+      let uniswapLink: string | undefined
+      if (isGraduated) {
+        uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
+      }
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: tokenGraduationThreshold.toString(),
+        totalTokensDistributed: totalTokensDistributed.toString(),
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
+        isGraduated,
+        uniswapLink,
+        paymentTokenPrice: paymentTokenPrice.toString(),
+        paymentTokenDecimals,
+        distributionModel: "merkle",
+        merkleRoot: tokenDBEntryForMetrics?.merkleRoot || null,
+      }
     } else try {
+      // Legacy batch distribution model: read from on-chain
       if (!thirdwebClient) {
         console.warn(`⚠️  Thirdweb client not initialized - cannot fetch contract metrics for ${tokenEntry.id}`)
         throw new Error("Thirdweb client not initialized")
@@ -2277,13 +2332,13 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
               address: IAO_FACTORY_ADDRESS,
               abi: IAOTokenFactoryABI,
             })
-            
+
             const paymentTokenInfo = await readContract({
               contract: factoryContract,
               method: "paymentTokenInfo",
               params: [tokenEntry.paymentToken],
             })
-            
+
             // paymentTokenInfo returns: [price, paymentToken, paymentTokenDecimals, graduationThreshold, sqrtPriceX96Token0, sqrtPriceX96Token1]
             if (paymentTokenInfo && Array.isArray(paymentTokenInfo) && paymentTokenInfo.length >= 3) {
               paymentTokenPrice = BigInt(paymentTokenInfo[0].toString())
@@ -2312,20 +2367,12 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         const totalTokensDistributedBigInt = BigInt(totalTokensDistributed.toString())
         const totalFeesCollectedBigInt = BigInt(totalFeesCollected.toString())
 
-        // Fix: Calculate bonding progress percentage with proper precision
-        // Use floating point division instead of BigInt division to preserve precision for small percentages
+        // Calculate bonding progress percentage with proper precision
         let bondingProgress = 0
         if (graduationThresholdBigInt > 0n) {
-          // Convert BigInt to Number for floating point division (within safe integer range)
-          // This allows us to preserve precision for very small percentages
           const totalDistributedNum = Number(totalTokensDistributedBigInt)
           const thresholdNum = Number(graduationThresholdBigInt)
-          
-          // Calculate percentage: (totalTokensDistributed / graduationThreshold) * 100
-          // For very large numbers, this may have some precision loss, but provides correct percentage
           bondingProgress = (totalDistributedNum / thresholdNum) * 100
-          
-          // Ensure valid number (handle NaN/Infinity)
           if (!isFinite(bondingProgress)) {
             bondingProgress = 0
           }
@@ -2336,15 +2383,7 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         // Generate Uniswap link if graduated (Base Sepolia)
         let uniswapLink: string | undefined
         if (isGraduated) {
-          // Uniswap V4 pools are identified by PoolId, not a traditional address
-          // For Base Sepolia, link to token page which should show pool info
-          // TODO: Once Uniswap V4 frontend supports direct pool links, update this
-          // Pool parameters: fee=10000 (1%), tickSpacing=200, hook=lpGuardHook
-          // For now, link to token page which should display pool information
           uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
-          
-          // Alternative: Link to swap page with token pair pre-selected
-          // uniswapLink = `https://app.uniswap.org/swap?chain=base-sepolia&inputCurrency=${tokenEntry.paymentToken}&outputCurrency=${tokenEntry.id}`
         }
 
         contractMetrics = {
@@ -2352,7 +2391,7 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
           graduationThreshold: graduationThresholdBigInt.toString(),
           totalTokensDistributed: totalTokensDistributedBigInt.toString(),
           totalFeesCollected: totalFeesCollectedBigInt.toString(),
-          bondingProgress: Math.min(bondingProgress, 100), // Cap at 100%
+          bondingProgress: Math.min(bondingProgress, 100),
           isGraduated,
           uniswapLink,
           paymentTokenPrice: paymentTokenPrice?.toString() || null,
@@ -3183,6 +3222,31 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                       console.log(`✅ Updated subscriptionCount: ${newSubscriptionCount}`)
                     })()
                   ])
+
+                  // Track virtual token earnings for Merkle claim distribution
+                  if (earningsService && tokenDBEntry.distributionModel === 'merkle') {
+                    try {
+                      const ptp = BigInt(tokenDBEntry.paymentTokenPrice || "25000000000000000000000")
+                      const ptd = tokenDBEntry.paymentTokenDecimals ?? 6
+                      const tokensEarned = (BigInt(api.fee) * ptp) / BigInt(10 ** ptd)
+
+                      await Promise.all([
+                        earningsService.incrementEarnings(
+                          tokenEntry.id,
+                          userAddress,
+                          tokensEarned.toString(),
+                          api.fee
+                        ),
+                        dynamoDBService.incrementVirtualDistributed(
+                          tokenEntry.id,
+                          tokensEarned.toString()
+                        ),
+                      ])
+                      console.log(`✅ Earnings tracked: ${tokensEarned.toString()} tokens for ${userAddress}`)
+                    } catch (earningsError) {
+                      console.error("⚠️  Earnings tracking error (non-blocking):", earningsError)
+                    }
+                  }
                 }
               }
             }
@@ -3317,6 +3381,187 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     })
   }
 }
+
+/**
+ * EARNINGS & CLAIM ENDPOINTS (Merkle Distribution)
+ * NOTE: Must be defined before catch-all /api/:serverSlug/:apiSlug route
+ */
+
+/**
+ * GET /api/earnings/:serverSlug/:userAddress - Get user earnings for a specific server
+ */
+app.get('/api/earnings/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+
+  try {
+    if (!earningsService || !dynamoDBService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    // Get token DB entry for bonding progress
+    const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
+    const virtualDistributed = BigInt(tokenDBEntry?.virtualTokensDistributed || "0")
+    const graduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
+    const bondingProgress = graduationThreshold > 0n
+      ? Number((virtualDistributed * 10000n) / graduationThreshold) / 100
+      : 0
+    const isGraduated = tokenDBEntry?.graduated === true
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      totalTokensEarned: earning?.totalTokensEarned || "0",
+      totalFeesPaid: earning?.totalFeesPaid || "0",
+      callCount: earning?.callCount || "0",
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+      bondingProgress: Math.min(bondingProgress, 100),
+      isGraduated,
+    })
+  } catch (error: any) {
+    console.error("Error fetching earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/earnings/:serverSlug - Get all earnings for a server
+ */
+app.get('/api/earnings/:serverSlug', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+
+  try {
+    if (!earningsService || !dynamoDBService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenEntry.id)
+    const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
+    const totalVirtualDistributed = tokenDBEntry?.virtualTokensDistributed || "0"
+    const graduationThreshold = "625000000000000000000000000"
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      users: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+        totalFeesPaid: e.totalFeesPaid,
+        callCount: e.callCount,
+        claimed: e.claimed,
+      })),
+      totalVirtualDistributed,
+      graduationThreshold,
+    })
+  } catch (error: any) {
+    console.error("Error fetching all earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/claim/:serverSlug/:userAddress - Get Merkle proof for claiming tokens (post-graduation)
+ */
+app.get('/api/claim/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+
+  try {
+    if (!merkleTreeService || !earningsService) {
+      return res.status(503).json({ error: "Merkle tree service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    // Check if token has graduated
+    const tokenDBEntry = dynamoDBService ? await dynamoDBService.getItem(tokenEntry.id) : null
+    if (!tokenDBEntry?.graduated) {
+      return res.status(400).json({
+        error: "Token not graduated",
+        message: "Merkle claims are only available after graduation. Bonding curve is still active.",
+      })
+    }
+
+    // Get Merkle proof
+    const proofData = await merkleTreeService.generateProof(tokenEntry.id, userAddress)
+    if (!proofData) {
+      return res.status(404).json({
+        error: "No claim found",
+        message: `No token earnings found for ${userAddress} on ${serverSlug}`,
+      })
+    }
+
+    // Check if already claimed
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      amount: proofData.amount,
+      proof: proofData.proof,
+      merkleRoot: tokenDBEntry.merkleRoot || "",
+      index: proofData.index,
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+    })
+  } catch (error: any) {
+    console.error("Error fetching claim data:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * POST /api/claim/:serverSlug/:userAddress/confirm - Confirm a claim transaction
+ */
+app.post('/api/claim/:serverSlug/:userAddress/confirm', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+  const { txHash } = req.body
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    if (!txHash) {
+      return res.status(400).json({ error: "Missing txHash in request body" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found" })
+    }
+
+    await earningsService.markAsClaimed(tokenEntry.id, userAddress, txHash)
+
+    return res.status(200).json({
+      success: true,
+      message: "Claim confirmed",
+      txHash,
+    })
+  } catch (error: any) {
+    console.error("Error confirming claim:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
 
 /**
  * AGENT ENDPOINTS

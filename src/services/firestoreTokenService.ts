@@ -58,6 +58,13 @@ export interface IAOTokenDBEntry {
   apis: ApiEntry[];              // Array of registered APIs (each with own fee)
   createdAt: string;             // ISO timestamp
   updatedAt: string;             // ISO timestamp
+  // Merkle claim distribution fields
+  virtualTokensDistributed?: string;  // BigInt — total virtual tokens allocated (DB-tracked)
+  merkleRoot?: string;                // bytes32 hex, set at graduation
+  distributionModel?: string;         // "batch" | "merkle" — controls graduation path
+  paymentTokenPrice?: string;         // Cached from factory (for tokensPerCall calc)
+  paymentTokenDecimals?: number;      // Cached (6 for USDC)
+  graduated?: boolean;                // Whether token has graduated
 }
 
 /**
@@ -322,6 +329,34 @@ class DynamoDBService {
       return null;
     }
     return token.apis.find(api => api.index === index) || null;
+  }
+
+  /**
+   * Atomically increment virtualTokensDistributed on a token document.
+   * Used after each API call to track bonding progress in DB.
+   */
+  async incrementVirtualDistributed(tokenAddress: string, tokensEarned: string): Promise<void> {
+    const normalizedId = normalizeAddress(tokenAddress);
+    try {
+      const docRef = this.firestore.collection(this.collectionName).doc(normalizedId);
+      const doc = await docRef.get();
+      if (!doc.exists) {
+        console.error(`❌ Token ${tokenAddress} not found for virtual distribution increment`);
+        return;
+      }
+      const current = doc.data() as IAOTokenDBEntry;
+      const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
+      const newVirtual = (currentVirtual + BigInt(tokensEarned)).toString();
+
+      await docRef.update({
+        virtualTokensDistributed: newVirtual,
+        updatedAt: new Date().toISOString(),
+      });
+      console.log(`✅ Virtual tokens distributed updated: ${newVirtual}`);
+    } catch (err) {
+      console.error(`❌ Failed to increment virtual distributed for ${tokenAddress}:`, err);
+      throw err;
+    }
   }
 }
 
