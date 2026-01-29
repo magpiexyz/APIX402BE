@@ -162,6 +162,7 @@ export class AgentService {
     const fieldsToUpdate = [
       'name',
       'description',
+      'systemInstructions',
       'availableTools',
       'starterPrompts',
       'isPublic',

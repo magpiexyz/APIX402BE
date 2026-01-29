@@ -24,6 +24,7 @@ import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/firestoreC
 import { generateBuilderJWT } from './utils/jwtAuth.js'
 import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
 import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
+import { v2 as cloudinary } from 'cloudinary'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -53,6 +54,18 @@ const IAO_FACTORY_ADDRESS = "0xF110bA6BBc7cD595842B6b56ab870faC811e41B5";
 
 // Load environment variables
 config()
+
+// Configure Cloudinary for logo uploads
+if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  })
+  console.log('✅ Cloudinary configured for logo uploads')
+} else {
+  console.log('⚠️  Cloudinary credentials not found - logo uploads will be disabled')
+}
 
 const app = express()
 
@@ -330,6 +343,7 @@ interface IAOTokenEntry {
   paymentToken: string      // Payment token address (e.g., USDC)
   chainId?: string          // Chain ID: "84532" (Base Sepolia), "devnet" (Solana), etc.
   tags?: string[]           // Array of category tags
+  logoUrl?: string          // Cloudinary URL for server logo
   apis: ApiEntry[]          // Array of registered APIs (each with own fee)
 }
 
@@ -359,6 +373,7 @@ async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | n
         paymentToken: dbEntry.paymentToken,
         chainId: dbEntry.chainId,
         tags: dbEntry.tags,
+        logoUrl: dbEntry.logoUrl,
         apis: dbEntry.apis || [],
       }
       console.log(`✅ Found IAO token in DynamoDB: ${addressLower} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
@@ -406,6 +421,7 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
         paymentToken: dbEntry.paymentToken,
         chainId: dbEntry.chainId,
         tags: dbEntry.tags,
+        logoUrl: dbEntry.logoUrl,
         apis: dbEntry.apis || [],
       }
 
@@ -789,6 +805,96 @@ async function executePaymentTransfer(
 }
 
 /**
+ * POST /api/upload-logo - Upload a server logo to Cloudinary
+ *
+ * Request body:
+ * {
+ *   image: string (base64-encoded image data with data URI prefix)
+ * }
+ *
+ * Returns:
+ * {
+ *   success: boolean,
+ *   logoUrl?: string,
+ *   error?: string
+ * }
+ */
+app.post('/api/upload-logo', async (req, res) => {
+  try {
+    // Check if Cloudinary is configured
+    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+      return res.status(503).json({
+        success: false,
+        error: 'Logo upload service not configured'
+      })
+    }
+
+    const { image } = req.body
+
+    if (!image) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing image data'
+      })
+    }
+
+    // Validate base64 image format (should start with data:image/)
+    if (!image.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image format. Must be a base64-encoded image with data URI prefix.'
+      })
+    }
+
+    // Validate image type
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml']
+    const mimeTypeMatch = image.match(/^data:(image\/[^;]+);base64,/)
+    if (!mimeTypeMatch || !validTypes.includes(mimeTypeMatch[1])) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid image type. Allowed types: png, jpg, jpeg, webp, svg`
+      })
+    }
+
+    // Calculate approximate file size from base64 (base64 is ~33% larger than binary)
+    const base64Data = image.split(',')[1]
+    const fileSizeBytes = Math.ceil((base64Data.length * 3) / 4)
+    const maxSizeBytes = 500 * 1024 // 500KB
+
+    if (fileSizeBytes > maxSizeBytes) {
+      return res.status(400).json({
+        success: false,
+        error: `Image too large. Maximum size is 500KB, received ${Math.round(fileSizeBytes / 1024)}KB`
+      })
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(image, {
+      folder: 'apix-logos',
+      resource_type: 'image',
+      transformation: [
+        { width: 200, height: 200, crop: 'fill', gravity: 'center' },
+        { quality: 'auto', fetch_format: 'auto' }
+      ]
+    })
+
+    console.log(`✅ Logo uploaded to Cloudinary: ${uploadResult.secure_url}`)
+
+    return res.status(200).json({
+      success: true,
+      logoUrl: uploadResult.secure_url
+    })
+
+  } catch (error: any) {
+    console.error('Error uploading logo:', error)
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to upload logo'
+    })
+  }
+})
+
+/**
  * POST /api/test-endpoint - Test an API endpoint before registration
  *
  * Allows builders to test their API endpoints with custom request body
@@ -972,6 +1078,7 @@ app.post('/api/register', async (req, res) => {
       builder,
       paymentToken,
       tags,       // Array of category tags (optional)
+      logoUrl,    // Cloudinary URL for server logo (optional)
       chainId = "84532",  // Chain ID: "84532" (Base Sepolia) or "devnet" (Solana)
     } = req.body
 
@@ -1339,6 +1446,7 @@ app.post('/api/register', async (req, res) => {
       refundCount: "0",
       fulfilledCount: "0",
       tags: validatedTags.length > 0 ? validatedTags : undefined,
+      logoUrl: logoUrl || undefined,
       createdAt: now,
       updatedAt: now,
     }
@@ -1362,6 +1470,7 @@ app.post('/api/register', async (req, res) => {
         apis: sanitizeApisForPublic(apiEntries), // Hide apiUrl from response
         builder: tokenEntry.builder,
         paymentToken: tokenEntry.paymentToken,
+        logoUrl: tokenEntry.logoUrl,
       }
     })
   } catch (error: any) {
@@ -1399,6 +1508,8 @@ app.post('/api/add-api', async (req, res) => {
       description,
       fee,
       method = 'GET',  // Default to GET if not specified
+      parameters = [],  // Request parameters documentation
+      responseFormat = '',  // Expected response format
       builder,
     } = req.body
 
@@ -1480,10 +1591,16 @@ app.post('/api/add-api', async (req, res) => {
 
       clearTimeout(timeoutId)
 
-      if (response.status !== 200 && response.status !== 202) {
+      // For POST endpoints, also accept 400 (Bad Request) since validation sends empty body
+      // which may not be valid for APIs that require specific parameters
+      const acceptableStatuses = method === 'POST'
+        ? [200, 202, 400, 422]
+        : [200, 202]
+
+      if (!acceptableStatuses.includes(response.status)) {
         return res.status(400).json({
           error: "API endpoint validation failed",
-          message: `API endpoint (${apiUrl}) returned status code ${response.status} instead of 200/202 for ${method} request. Please ensure your API endpoint is accessible and returns a 200 or 202 status code.`
+          message: `API endpoint (${apiUrl}) returned status code ${response.status}. Please ensure your API endpoint is accessible.`
         })
       }
     } catch (fetchError: any) {
@@ -1551,7 +1668,9 @@ app.post('/api/add-api', async (req, res) => {
       apiUrl,
       description,
       fee,
-      method as 'GET' | 'POST'
+      method as 'GET' | 'POST',
+      parameters,
+      responseFormat
     )
 
     if (!newApi) {
@@ -1700,6 +1819,7 @@ app.get('/api/server/:slug', async (req, res) => {
         paymentToken: tokenEntry.paymentToken,
         subscriptionCount: tokenEntry.subscriptionCount || "0",
         tags: tokenEntry.tags || [],
+        logoUrl: tokenEntry.logoUrl,
         apis: tokenEntry.apis ? sanitizeApisForPublic(tokenEntry.apis) : [],
         apiCount: tokenEntry.apis?.length || 0,
         chainId: tokenEntry.chainId,
@@ -1954,6 +2074,7 @@ app.get('/api/servers', async (req, res) => {
       paymentToken: token.paymentToken,
       subscriptionCount: token.subscriptionCount,
       tags: token.tags || [],
+      logoUrl: token.logoUrl,
       apis: token.apis ? sanitizeApisForPublic(token.apis) : [],
       apiCount: token.apis?.length || 0,
       chainId: token.chainId,

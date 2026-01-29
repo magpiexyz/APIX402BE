@@ -54,6 +54,7 @@ export interface IAOTokenDBEntry {
   fulfilledCount: string;        // BigInt as string, default "0"
   totalFeesCollected?: string;   // BigInt as string - for Solana bonding progress tracking
   tags?: string[];               // Array of category tags (e.g., ["crypto", "trading"])
+  logoUrl?: string;              // Cloudinary URL for server logo
   apis: ApiEntry[];              // Array of registered APIs (each with own fee)
   createdAt: string;             // ISO timestamp
   updatedAt: string;             // ISO timestamp
@@ -244,7 +245,17 @@ class DynamoDBService {
    * Add a new API to an existing token
    * The new API will be assigned the next available index
    */
-  async addApiToToken(tokenAddress: string, apiSlug: string, apiName: string, apiUrl: string, description: string, fee: string, method: 'GET' | 'POST' = 'GET'): Promise<ApiEntry | null> {
+  async addApiToToken(
+    tokenAddress: string,
+    apiSlug: string,
+    apiName: string,
+    apiUrl: string,
+    description: string,
+    fee: string,
+    method: 'GET' | 'POST' = 'GET',
+    parameters: ApiParameter[] = [],
+    responseFormat: string = ''
+  ): Promise<ApiEntry | null> {
     const token = await this.getItem(tokenAddress);
     if (!token) {
       console.error(`❌ Token ${tokenAddress} not found`);
@@ -272,6 +283,8 @@ class DynamoDBService {
       description: description,
       fee: fee,
       method: method,
+      parameters: parameters,
+      responseFormat: responseFormat,
       createdAt: new Date().toISOString(),
     };
 
