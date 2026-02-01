@@ -69,6 +69,7 @@ export const Collections = {
   WEBHOOKS: 'webhooks',
   TOKEN_EARNINGS: 'token-earnings',
   MERKLE_TREES: 'merkle-trees',
+  GRADUATION_LOCKS: 'graduation-locks',
 } as const;
 
 /**

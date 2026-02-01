@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APIX — Graduation Architecture v2</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 0.5rem;
+      font-size: 1.8rem;
+      color: #58a6ff;
+    }
+    .subtitle {
+      text-align: center;
+      color: #8b949e;
+      margin-bottom: 2rem;
+      font-size: 0.95rem;
+    }
+    .diagram-section {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      overflow-x: auto;
+    }
+    .diagram-section h2 {
+      color: #58a6ff;
+      margin-bottom: 1.2rem;
+      font-size: 1.2rem;
+      border-bottom: 1px solid #30363d;
+      padding-bottom: 0.5rem;
+    }
+    .diagram-section p {
+      color: #8b949e;
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+      line-height: 1.6;
+    }
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 1rem;
+    }
+    .detail-card {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1.2rem;
+    }
+    .detail-card h3 {
+      color: #58a6ff;
+      font-size: 0.95rem;
+      margin-bottom: 0.6rem;
+    }
+    .detail-card p, .detail-card li {
+      color: #8b949e;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    .detail-card ul {
+      padding-left: 1.2rem;
+    }
+    .detail-card code {
+      background: #1a2332;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.82rem;
+      color: #c9d1d9;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.85rem;
+    }
+    th {
+      background: #1a2332;
+      color: #58a6ff;
+      text-align: left;
+      padding: 0.6rem 0.8rem;
+      border: 1px solid #30363d;
+    }
+    td {
+      padding: 0.6rem 0.8rem;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+    }
+    td code {
+      background: #1a2332;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      font-size: 0.82rem;
+    }
+    .tag {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .tag-gcp { background: #1a2332; color: #4a9eff; border: 1px solid #4a9eff; }
+    .tag-aws { background: #1a2315; color: #ff9f43; border: 1px solid #ff9f43; }
+    .tag-chain { background: #2d1a1a; color: #ee5253; border: 1px solid #ee5253; }
+    .tag-fs { background: #0d2137; color: #58a6ff; border: 1px solid #58a6ff; }
+    @media (max-width: 768px) {
+      .detail-grid { grid-template-columns: 1fr; }
+      body { padding: 1rem; }
+    }
+    footer {
+      text-align: center;
+      color: #484f58;
+      margin-top: 2rem;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>APIX — Graduation Architecture v2</h1>
+  <p class="subtitle">Complete flow: API call &rarr; earnings tracking &rarr; threshold detection &rarr; Merkle tree &rarr; on-chain graduation</p>
+
+  <!-- ============================================ -->
+  <!-- 1. CROSS-CLOUD SERVICE MAP                   -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>1. Cross-Cloud Service Map</h2>
+    <p>Three clouds coordinate: GCP runs the backend and stores state, AWS Lambda holds private keys and executes on-chain transactions, blockchains store the final graduated state.</p>
+    <pre class="mermaid">
+flowchart TB
+    USER["API Consumer<br/>Sends request with<br/>PAYMENT-SIGNATURE header"]
+
+    subgraph GCP["Google Cloud Platform"]
+        direction TB
+        CR["Cloud Run<br/>Express.js Backend<br/>/api/:serverSlug/:apiSlug"]
+        FS["Firestore<br/>iao-tokens<br/>token-earnings<br/>merkle-trees<br/>graduation-locks"]
+        CT["Cloud Tasks<br/>graduation-queue<br/>Named tasks = dedup<br/>5 retries + backoff"]
+
+        CR -->|"read/write<br/>tokens, earnings,<br/>merkle trees, locks"| FS
+        CR -->|"dispatchGraduationTask()<br/>named task: graduate-{addr}"| CT
+        CT -->|"POST /internal/graduate/:token<br/>X-Graduation-Secret header<br/>retry on 5xx"| CR
+    end
+
+    subgraph AWS["Amazon Web Services"]
+        direction TB
+        LEVM["Lambda EVM<br/>graduation-evm<br/>AUTOMATION_PRIVATE_KEY"]
+        LSOL["Lambda Solana<br/>graduation-solana<br/>AUTOMATION_PRIVATE_KEY"]
+    end
+
+    subgraph CHAINS["Blockchains"]
+        direction LR
+        BASE["Base Sepolia<br/>IAOTokenV2.sol<br/>graduateWithMerkle()"]
+        SOL["Solana Devnet<br/>iao-factory program<br/>batch_mint + deploy_liquidity"]
+    end
+
+    BUILDER["Builder API<br/>Developer's endpoint<br/>The actual API being called"]
+
+    USER -->|"1. API request<br/>+ payment signature"| CR
+    CR -->|"2. Forward request<br/>X-IAO-Auth JWT"| BUILDER
+    BUILDER -->|"3. Response data"| CR
+    CR -.->|"4. lambda.invoke()<br/>InvocationType: Event<br/>async fire-and-forget"| LEVM
+    CR -.->|"4. lambda.invoke()<br/>InvocationType: Event<br/>async fire-and-forget"| LSOL
+    LEVM -->|"5. graduateWithMerkle TX"| BASE
+    LSOL -->|"5. batch_mint + deploy_liquidity"| SOL
+    LEVM -.->|"6. POST /internal/<br/>graduation-confirm/:token<br/>txHash in body"| CR
+    LSOL -.->|"6. POST /internal/<br/>graduation-confirm/:token<br/>txHash in body"| CR
+
+    style GCP fill:#1a2332,stroke:#4a9eff,stroke-width:2px,color:#58a6ff
+    style AWS fill:#1a2315,stroke:#ff9f43,stroke-width:2px,color:#ff9f43
+    style CHAINS fill:#2d1a1a,stroke:#ee5253,stroke-width:2px,color:#ee5253
+    style CR fill:#238636,color:#fff
+    style FS fill:#4a9eff,color:#fff
+    style CT fill:#ff9f43,color:#fff
+    style LEVM fill:#ff9f43,color:#fff
+    style LSOL fill:#ff9f43,color:#fff
+    style BASE fill:#ee5253,color:#fff
+    style SOL fill:#9b59b6,color:#fff
+    style USER fill:#58a6ff,color:#fff
+    style BUILDER fill:#30363d,color:#c9d1d9
+    </pre>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 2. DETAILED SEQUENCE DIAGRAM                 -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>2. Full Graduation Sequence</h2>
+    <p>Step-by-step flow from a user's API call through to on-chain graduation. The user gets their response at step 5 — everything after is async.</p>
+    <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as API Consumer
+    participant CR as Cloud Run Backend
+    participant B as Builder API
+    participant FS as Firestore
+    participant CT as Cloud Tasks
+    participant L as AWS Lambda
+    participant BC as Blockchain
+
+    U->>CR: POST /api/server/api + PAYMENT-SIGNATURE header
+
+    CR->>CR: verifyPaymentAuthorization() — check signature without settling
+
+    CR->>B: Forward request with X-IAO-Auth JWT
+    B-->>CR: 2xx response with data
+
+    CR->>CR: executePaymentTransfer() — settle payment on-chain
+
+    CR->>U: Return builder response + payment confirmation header
+
+    Note over CR,FS: Post-payment async block (fire-and-forget, non-blocking)
+
+    CR->>FS: earningsService.incrementEarnings(token, user, tokensEarned, fee)
+    CR->>FS: dynamoDBService.incrementVirtualDistributed(token, tokensEarned)<br/>Uses Firestore runTransaction() for atomicity
+
+    FS-->>CR: { newTotal, chainId, graduated, totalFeesCollected }
+
+    Note over CR: Layer 1: Firestore Transaction<br/>Atomic read+increment guarantees<br/>accurate threshold comparison
+
+    alt newTotal >= graduationThreshold AND NOT graduated
+        CR->>CT: dispatchGraduationTask({ tokenAddress, chainId, ... })<br/>Named task: graduate-{tokenAddress}
+
+        Note over CT: Layer 2: Cloud Tasks Named Task<br/>ALREADY_EXISTS (gRPC 6) silently ignored<br/>10 concurrent API calls = 1 task
+
+        CT->>CR: POST /internal/graduate/:tokenAddress<br/>X-Graduation-Secret header<br/>Retries: 5 attempts, 60s-600s backoff
+
+        CR->>FS: Check token.graduated flag
+        FS-->>CR: graduated = false (proceed)
+
+        CR->>FS: acquireGraduationLock(tokenAddress)<br/>Firestore transaction, 5-min TTL
+
+        Note over CR,FS: Layer 3: Graduation Lock<br/>Prevents duplicate execution<br/>Auto-expires after 5 minutes
+
+        FS-->>CR: Lock acquired = true
+
+        CR->>FS: earningsService.getEarningsByToken(tokenAddress)
+        FS-->>CR: [{userAddress, totalTokensEarned}, ...]
+
+        CR->>CR: StandardMerkleTree.of(leaves, ['address', 'uint256'])<br/>Build tree from earnings, extract root
+
+        CR->>FS: merkleTreeService.storeMerkleTree(tokenAddress, {<br/>  merkleRoot, leaves, treeDump, totalTokens, ... })
+
+        CR->>FS: Update iao-tokens/{addr}.merkleRoot = root
+
+        CR->>L: lambda.invoke({ action: 'graduate',<br/>  tokenAddress, chainId, merkleRoot,<br/>  virtualDistributed, totalFeesCollected })<br/>InvocationType: Event (async, 202 accepted)
+
+        CR->>FS: releaseGraduationLock(tokenAddress)
+
+        Note over L,BC: Lambda executes asynchronously
+
+        alt EVM Chain (numeric chainId)
+            L->>BC: TokenDistributor.graduateTokenWithMerkle(<br/>  token, merkleRoot, virtualDistributed, feesCollected)<br/>Sets merkle root on-chain + deploys Uniswap V4 liquidity
+        else Solana Chain (devnet/mainnet-beta)
+            L->>CR: GET /internal/graduation-earnings/:token<br/>Fetch per-user earnings breakdown
+            CR-->>L: { earnings: [{userAddress, totalTokensEarned}, ...] }
+            L->>BC: batch_mint(recipients, amounts, fees)<br/>Chunks of 50 recipients per TX
+            L->>BC: deploy_liquidity()<br/>Marks token as graduated on-chain
+        end
+
+        BC-->>L: TX confirmed, txHash
+
+        L->>CR: POST /internal/graduation-confirm/:tokenAddress<br/>{ txHash: "0x..." }
+
+        CR->>FS: Update iao-tokens/{addr}.graduated = true
+        CR->>FS: Update merkle-trees/{addr}.setOnChainTxHash = txHash
+    end
+    </pre>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 3. THREE-LAYER DEDUP                         -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>3. Three-Layer Race Condition Protection</h2>
+    <p>Multiple API calls can cross the threshold simultaneously. Three independent layers prevent duplicate graduation.</p>
+    <pre class="mermaid">
+flowchart TB
+    subgraph TRIGGER["10 concurrent API calls cross threshold"]
+        A1["Call 1"] & A2["Call 2"] & A3["Call 3"] & A4["..."] & A5["Call 10"]
+    end
+
+    subgraph L1["Layer 1: Firestore Transaction"]
+        direction TB
+        T1["incrementVirtualDistributed()<br/>uses runTransaction()"]
+        T2["Atomic read + write<br/>Only ONE call gets newTotal >= threshold first<br/>Others see graduated=true on next read"]
+        T1 --> T2
+    end
+
+    subgraph L2["Layer 2: Cloud Tasks Named Task"]
+        direction TB
+        CT1["dispatchGraduationTask()<br/>task name = graduate-{tokenAddr}"]
+        CT2["First call creates task<br/>Remaining 9 get ALREADY_EXISTS (gRPC 6)<br/>Silently ignored"]
+        CT1 --> CT2
+    end
+
+    subgraph L3["Layer 3: Graduation Lock"]
+        direction TB
+        GL1["acquireGraduationLock()<br/>Firestore doc with 5-min TTL"]
+        GL2["First /internal/graduate call acquires lock<br/>Any retry or duplicate gets 409 Conflict<br/>Lock auto-expires if process crashes"]
+        GL1 --> GL2
+    end
+
+    RESULT["Exactly ONE graduation executes"]
+
+    TRIGGER --> L1
+    L1 -->|"threshold crossed calls<br/>may be 1-3"| L2
+    L2 -->|"exactly 1 task<br/>created"| L3
+    L3 -->|"exactly 1<br/>lock acquired"| RESULT
+
+    style TRIGGER fill:#2d1a1a,stroke:#ee5253,stroke-width:1px,color:#ee5253
+    style L1 fill:#1a2332,stroke:#4a9eff,stroke-width:2px,color:#58a6ff
+    style L2 fill:#1a2315,stroke:#ff9f43,stroke-width:2px,color:#ff9f43
+    style L3 fill:#1a2332,stroke:#9b59b6,stroke-width:2px,color:#9b59b6
+    style RESULT fill:#238636,color:#fff
+    style T1 fill:#4a9eff,color:#fff
+    style T2 fill:#0d2137,color:#c9d1d9
+    style CT1 fill:#ff9f43,color:#fff
+    style CT2 fill:#1a2315,color:#c9d1d9
+    style GL1 fill:#9b59b6,color:#fff
+    style GL2 fill:#1a1a2d,color:#c9d1d9
+    </pre>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 4. INTERNAL ENDPOINTS                        -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>4. Internal API Endpoints</h2>
+    <p>Three internal endpoints coordinate graduation. All require <code>X-Graduation-Secret</code> header when <code>GRADUATION_INTERNAL_SECRET</code> is set.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Endpoint</th>
+          <th>Called By</th>
+          <th>Purpose</th>
+          <th>Key Behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>POST /internal/graduate/:tokenAddress</code></td>
+          <td><span class="tag tag-gcp">Cloud Tasks</span></td>
+          <td>Build Merkle tree and invoke Lambda</td>
+          <td>
+            Returns <code>200 already_graduated</code> if token graduated.<br/>
+            Returns <code>409</code> if lock held.<br/>
+            Returns <code>500</code> on failure (Cloud Tasks retries).<br/>
+            Acquires + releases graduation lock.
+          </td>
+        </tr>
+        <tr>
+          <td><code>POST /internal/graduation-confirm/:tokenAddress</code></td>
+          <td><span class="tag tag-aws">Lambda</span></td>
+          <td>Set <code>graduated=true</code> after on-chain TX</td>
+          <td>
+            Receives <code>{ txHash }</code> in body.<br/>
+            Updates <code>iao-tokens/{addr}.graduated = true</code>.<br/>
+            Stores txHash on merkle-trees doc (non-fatal if missing).
+          </td>
+        </tr>
+        <tr>
+          <td><code>GET /internal/graduation-earnings/:tokenAddress</code></td>
+          <td><span class="tag tag-aws">Solana Lambda</span></td>
+          <td>Fetch per-user earnings for <code>batch_mint</code></td>
+          <td>
+            Returns <code>{ earnings: [{userAddress, totalTokensEarned}] }</code>.<br/>
+            Only needed for Solana (EVM uses merkleRoot directly).
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 5. FIRESTORE COLLECTIONS                     -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>5. Firestore Data Flow</h2>
+    <p>Four Firestore collections are involved in graduation. Documents are keyed by token address.</p>
+    <pre class="mermaid">
+flowchart LR
+    subgraph FS["Firestore Collections"]
+        direction TB
+
+        subgraph IAO["iao-tokens / {tokenAddress}"]
+            direction TB
+            F1["virtualTokensDistributed: string BigInt<br/>merkleRoot: bytes32 hex<br/>graduated: boolean<br/>distributionModel: 'merkle'<br/>chainId: '84532' | 'devnet'"]
+        end
+
+        subgraph EARN["token-earnings / {tokenAddr}#{userAddr}"]
+            direction TB
+            F2["tokenAddress: string<br/>userAddress: string<br/>totalTokensEarned: string BigInt<br/>totalFeesPaid: string BigInt<br/>callCount: string BigInt<br/>claimed: boolean"]
+        end
+
+        subgraph MERK["merkle-trees / {tokenAddress}"]
+            direction TB
+            F3["merkleRoot: bytes32 hex<br/>totalLeaves: number<br/>totalTokens: string BigInt<br/>leaves: [{address, amount, index}]<br/>treeDump: JSON string<br/>chainId: string<br/>setOnChainTxHash: string"]
+        end
+
+        subgraph LOCK["graduation-locks / {tokenAddress}"]
+            direction TB
+            F4["lockedAt: ISO timestamp<br/>expiresAt: ISO timestamp<br/>TTL: 5 minutes"]
+        end
+    end
+
+    API["Each API Call"] -->|"increment"| EARN
+    API -->|"increment<br/>virtualTokensDistributed"| IAO
+    GRAD["/internal/graduate"] -->|"read all earnings<br/>for token"| EARN
+    GRAD -->|"store tree + root"| MERK
+    GRAD -->|"set merkleRoot"| IAO
+    GRAD -->|"acquire / release"| LOCK
+    CONFIRM["/internal/<br/>graduation-confirm"] -->|"set graduated=true"| IAO
+    CONFIRM -->|"set txHash"| MERK
+
+    style FS fill:#0d1117,stroke:#30363d,stroke-width:1px,color:#c9d1d9
+    style IAO fill:#1a2332,stroke:#4a9eff,stroke-width:1px,color:#58a6ff
+    style EARN fill:#1a2332,stroke:#4a9eff,stroke-width:1px,color:#58a6ff
+    style MERK fill:#1a2332,stroke:#4a9eff,stroke-width:1px,color:#58a6ff
+    style LOCK fill:#1a2332,stroke:#9b59b6,stroke-width:1px,color:#9b59b6
+    style API fill:#238636,color:#fff
+    style GRAD fill:#ff9f43,color:#fff
+    style CONFIRM fill:#ff9f43,color:#fff
+    </pre>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 6. EVM vs SOLANA                             -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>6. EVM vs Solana Graduation Path</h2>
+    <p>The backend builds the Merkle tree identically for both chains. The Lambda execution differs.</p>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <h3>EVM (Base Sepolia) &mdash; chainId: "84532"</h3>
+        <ul>
+          <li>Lambda: <code>graduation-evm</code></li>
+          <li>Single TX: <code>TokenDistributor.graduateTokenWithMerkle(token, merkleRoot, virtualDistributed, feesCollected)</code></li>
+          <li>Contract internally calls <code>IAOTokenV2.graduateWithMerkle()</code> which:
+            <ul>
+              <li>Stores <code>merkleRoot</code> on-chain</li>
+              <li>Sets <code>totalTokensDistributed = virtualDistributed</code></li>
+              <li>Calls <code>_deployLiquidity()</code> &rarr; Uniswap V4 pool + LpGuardHook</li>
+            </ul>
+          </li>
+          <li>Users claim tokens via Merkle proof: <code>claim(amount, proof[])</code></li>
+          <li>Graduation threshold: <code>625,000,000 * 10^18</code></li>
+        </ul>
+      </div>
+      <div class="detail-card">
+        <h3>Solana (Devnet) &mdash; chainId: "devnet"</h3>
+        <ul>
+          <li>Lambda: <code>graduation-solana</code></li>
+          <li>Multi-step:
+            <ul>
+              <li>Fetches earnings via <code>GET /internal/graduation-earnings/:token</code></li>
+              <li>Calls <code>batch_mint(recipients, amounts, fees)</code> in chunks of 50</li>
+              <li>Creates ATAs for recipients who don't have them</li>
+              <li>Calls <code>deploy_liquidity()</code> after threshold crossed on-chain</li>
+            </ul>
+          </li>
+          <li>Tokens minted directly to user wallets (no Merkle claim)</li>
+          <li>Program ID: <code>FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA</code></li>
+          <li>Graduation threshold: <code>625,000,000 * 10^9</code></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 7. RESPONSIBILITY SPLIT                      -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>7. Responsibility Split &mdash; Backend vs Lambda</h2>
+    <pre class="mermaid">
+flowchart LR
+    subgraph BACKEND["Cloud Run Backend &mdash; NO private keys"]
+        direction TB
+        B1["Verify payment signature"]
+        B2["Forward to builder API"]
+        B3["Settle payment on-chain<br/>(via Thirdweb facilitator)"]
+        B4["Track earnings per user<br/>in Firestore"]
+        B5["Detect threshold crossing<br/>via Firestore transaction"]
+        B6["Dispatch Cloud Task<br/>(named task dedup)"]
+        B7["Acquire graduation lock<br/>(Firestore 5-min TTL)"]
+        B8["Build Merkle tree<br/>from earnings data"]
+        B9["Store tree + root<br/>in Firestore"]
+        B10["Invoke Lambda<br/>via AWS SDK"]
+        B11["Release graduation lock"]
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
+    end
+
+    subgraph LAMBDA["AWS Lambda &mdash; HAS private keys"]
+        direction TB
+        L1["Receive {action: 'graduate',<br/>tokenAddress, chainId, merkleRoot}"]
+        L2["Execute on-chain TX<br/>using AUTOMATION_PRIVATE_KEY"]
+        L3["POST /internal/<br/>graduation-confirm/:token<br/>{txHash}"]
+        L1 --> L2 --> L3
+    end
+
+    B10 -.->|"InvocationType: Event<br/>async 202 Accepted"| L1
+    L3 -.->|"Sets graduated=true<br/>in Firestore"| BACKEND
+
+    style BACKEND fill:#1a2332,stroke:#4a9eff,stroke-width:2px,color:#58a6ff
+    style LAMBDA fill:#1a2315,stroke:#ff9f43,stroke-width:2px,color:#ff9f43
+    style B1 fill:#238636,color:#fff
+    style B2 fill:#238636,color:#fff
+    style B3 fill:#238636,color:#fff
+    style B4 fill:#238636,color:#fff
+    style B5 fill:#238636,color:#fff
+    style B6 fill:#238636,color:#fff
+    style B7 fill:#238636,color:#fff
+    style B8 fill:#238636,color:#fff
+    style B9 fill:#238636,color:#fff
+    style B10 fill:#238636,color:#fff
+    style B11 fill:#238636,color:#fff
+    style L1 fill:#ff9f43,color:#fff
+    style L2 fill:#ff9f43,color:#fff
+    style L3 fill:#ff9f43,color:#fff
+    </pre>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 8. ENV VARS                                  -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>8. Environment Variables</h2>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <h3><span class="tag tag-gcp">GCP</span> Cloud Run Backend</h3>
+        <table>
+          <tr><td><code>GCP_PROJECT_ID</code></td><td>Firestore project</td></tr>
+          <tr><td><code>GRADUATION_QUEUE_NAME</code></td><td>Cloud Tasks queue (default: <code>graduation-queue</code>)</td></tr>
+          <tr><td><code>GRADUATION_QUEUE_LOCATION</code></td><td>Queue region (default: <code>us-central1</code>)</td></tr>
+          <tr><td><code>GRADUATION_INTERNAL_SECRET</code></td><td>Shared secret for internal endpoints</td></tr>
+          <tr><td><code>GRADUATION_LAMBDA_EVM</code></td><td>EVM Lambda function name/ARN</td></tr>
+          <tr><td><code>GRADUATION_LAMBDA_SOLANA</code></td><td>Solana Lambda function name/ARN</td></tr>
+          <tr><td><code>CLOUD_RUN_SERVICE_URL</code></td><td>Own URL for Cloud Tasks callback</td></tr>
+          <tr><td><code>AWS_REGION</code></td><td>AWS region for Lambda SDK</td></tr>
+          <tr><td><code>AWS_ACCESS_KEY_ID</code></td><td>IAM credentials for lambda:InvokeFunction</td></tr>
+          <tr><td><code>AWS_SECRET_ACCESS_KEY</code></td><td>IAM credentials</td></tr>
+        </table>
+      </div>
+      <div class="detail-card">
+        <h3><span class="tag tag-aws">AWS</span> Lambda Functions</h3>
+        <table>
+          <tr><td><code>AUTOMATION_PRIVATE_KEY</code></td><td>Wallet key for on-chain TX</td></tr>
+          <tr><td><code>BACKEND_URL</code></td><td>Cloud Run URL for callback</td></tr>
+          <tr><td><code>GRADUATION_INTERNAL_SECRET</code></td><td>Shared secret (same as backend)</td></tr>
+        </table>
+        <h3 style="margin-top: 1rem;">EVM Lambda only</h3>
+        <table>
+          <tr><td><code>RPC_URL</code></td><td>EVM RPC endpoint</td></tr>
+          <tr><td><code>TOKEN_DISTRIBUTOR</code></td><td>TokenDistributor contract address</td></tr>
+        </table>
+        <h3 style="margin-top: 1rem;">Solana Lambda only</h3>
+        <table>
+          <tr><td><code>SOLANA_RPC_URL</code></td><td>Solana RPC endpoint</td></tr>
+          <tr><td><code>IAO_PROGRAM_ID</code></td><td>Anchor program ID</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 9. FILE MAP                                  -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>9. Source File Map</h2>
+    <table>
+      <thead>
+        <tr><th>File</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>src/index.ts</code></td><td>Proxy post-payment threshold check, <code>/internal/graduate</code>, <code>/internal/graduation-confirm</code>, <code>/internal/graduation-earnings</code></td></tr>
+        <tr><td><code>src/services/firestoreTokenService.ts</code></td><td><code>incrementVirtualDistributed()</code> &mdash; Firestore transaction for atomic increment + threshold data return</td></tr>
+        <tr><td><code>src/services/graduationDispatcher.ts</code></td><td><code>dispatchGraduationTask()</code> &mdash; creates named Cloud Task, handles ALREADY_EXISTS dedup</td></tr>
+        <tr><td><code>src/services/graduationLock.ts</code></td><td><code>acquireGraduationLock()</code> / <code>releaseGraduationLock()</code> &mdash; Firestore lock with 5-min TTL</td></tr>
+        <tr><td><code>src/services/graduationNotifier.ts</code></td><td><code>notifyLambdaForGraduation()</code> &mdash; AWS SDK Lambda invoke (async Event type)</td></tr>
+        <tr><td><code>src/services/firestoreEarningsService.ts</code></td><td>Per-user earnings CRUD, used for Merkle tree leaf generation</td></tr>
+        <tr><td><code>src/services/firestoreMerkleTreeService.ts</code></td><td>Merkle tree storage + proof generation</td></tr>
+        <tr><td><code>src/db/firestoreClient.ts</code></td><td>Collections constant includes <code>GRADUATION_LOCKS</code></td></tr>
+        <tr><td><code>lambdas/graduation-evm/src/index.ts</code></td><td>EVM Lambda: calls <code>graduateTokenWithMerkle()</code>, POSTs confirmation</td></tr>
+        <tr><td><code>lambdas/graduation-solana/src/index.ts</code></td><td>Solana Lambda: fetches earnings, <code>batch_mint</code> in chunks, <code>deploy_liquidity</code>, POSTs confirmation</td></tr>
+        <tr><td><code>scripts/test-graduation-local.ts</code></td><td>Local E2E test: seeds data, calls internal endpoints, verifies Merkle tree + graduation</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 10. INFRA SETUP                              -->
+  <!-- ============================================ -->
+  <div class="diagram-section">
+    <h2>10. Infrastructure Setup Checklist</h2>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <h3>GCP &mdash; Cloud Tasks Queue</h3>
+        <p><code>gcloud tasks queues create graduation-queue --location=us-central1 --max-dispatches-per-second=1 --max-concurrent-dispatches=1 --max-attempts=5 --min-backoff=60s --max-backoff=600s</code></p>
+      </div>
+      <div class="detail-card">
+        <h3>AWS &mdash; IAM User</h3>
+        <p>Create IAM user <code>cloud-run-graduation</code> with <code>lambda:InvokeFunction</code> permission scoped to the two Lambda ARNs. Generate access keys for Cloud Run env vars.</p>
+      </div>
+      <div class="detail-card">
+        <h3>AWS &mdash; Deploy Lambdas</h3>
+        <p><code>cd lambdas/graduation-evm && npm install && npm run build && npm run deploy</code><br/>
+        <code>cd lambdas/graduation-solana && npm install && npm run build && npm run deploy</code></p>
+      </div>
+      <div class="detail-card">
+        <h3>Local Testing</h3>
+        <p><code>yarn dev</code> in terminal 1<br/>
+        <code>npx tsx scripts/test-graduation-local.ts</code> in terminal 2<br/>
+        Tests all 10 stages without Cloud Tasks or Lambda.</p>
+      </div>
+    </div>
+  </div>
+
+  <footer>APIX IAO &mdash; Graduation Architecture v2 &mdash; February 2026</footer>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#238636',
+        primaryTextColor: '#c9d1d9',
+        primaryBorderColor: '#30363d',
+        lineColor: '#58a6ff',
+        secondaryColor: '#161b22',
+        tertiaryColor: '#0d1117',
+        background: '#161b22',
+        mainBkg: '#161b22',
+        nodeBorder: '#30363d',
+        clusterBkg: '#0d1117',
+        clusterBorder: '#30363d',
+        titleColor: '#58a6ff',
+        edgeLabelBackground: '#161b22',
+        actorBkg: '#238636',
+        actorTextColor: '#fff',
+        actorBorder: '#30363d',
+        activationBorderColor: '#58a6ff',
+        activationBkgColor: '#1a2332',
+        signalColor: '#c9d1d9',
+        signalTextColor: '#c9d1d9',
+        noteBkgColor: '#1a2332',
+        noteTextColor: '#c9d1d9',
+        noteBorderColor: '#30363d',
+      },
+      flowchart: {
+        curve: 'basis',
+        padding: 20,
+        htmlLabels: true,
+      },
+      sequence: {
+        actorMargin: 80,
+        messageMargin: 40,
+      },
+    });
+  </script>
+</body>
+</html>

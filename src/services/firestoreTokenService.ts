@@ -332,27 +332,41 @@ class DynamoDBService {
   }
 
   /**
-   * Atomically increment virtualTokensDistributed on a token document.
-   * Used after each API call to track bonding progress in DB.
+   * Atomically increment virtualTokensDistributed on a token document using a Firestore transaction.
+   * Returns the new total and token metadata so the caller can check graduation threshold.
    */
-  async incrementVirtualDistributed(tokenAddress: string, tokensEarned: string): Promise<void> {
+  async incrementVirtualDistributed(
+    tokenAddress: string,
+    tokensEarned: string
+  ): Promise<{ newTotal: string; chainId: string; graduated: boolean; totalFeesCollected: string }> {
     const normalizedId = normalizeAddress(tokenAddress);
     try {
       const docRef = this.firestore.collection(this.collectionName).doc(normalizedId);
-      const doc = await docRef.get();
-      if (!doc.exists) {
-        console.error(`❌ Token ${tokenAddress} not found for virtual distribution increment`);
-        return;
-      }
-      const current = doc.data() as IAOTokenDBEntry;
-      const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
-      const newVirtual = (currentVirtual + BigInt(tokensEarned)).toString();
 
-      await docRef.update({
-        virtualTokensDistributed: newVirtual,
-        updatedAt: new Date().toISOString(),
+      const result = await this.firestore.runTransaction(async (txn) => {
+        const doc = await txn.get(docRef);
+        if (!doc.exists) {
+          throw new Error(`Token ${tokenAddress} not found for virtual distribution increment`);
+        }
+        const current = doc.data() as IAOTokenDBEntry;
+        const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
+        const newVirtual = (currentVirtual + BigInt(tokensEarned)).toString();
+
+        txn.update(docRef, {
+          virtualTokensDistributed: newVirtual,
+          updatedAt: new Date().toISOString(),
+        });
+
+        return {
+          newTotal: newVirtual,
+          chainId: current.chainId,
+          graduated: current.graduated ?? false,
+          totalFeesCollected: current.totalFeesCollected || "0",
+        };
       });
-      console.log(`✅ Virtual tokens distributed updated: ${newVirtual}`);
+
+      console.log(`✅ Virtual tokens distributed updated: ${result.newTotal}`);
+      return result;
     } catch (err) {
       console.error(`❌ Failed to increment virtual distributed for ${tokenAddress}:`, err);
       throw err;

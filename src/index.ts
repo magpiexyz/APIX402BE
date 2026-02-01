@@ -27,6 +27,9 @@ import { generateBuilderJWT } from './utils/jwtAuth.js'
 import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
 import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 import { v2 as cloudinary } from 'cloudinary'
+import { dispatchGraduationTask } from './services/graduationDispatcher.js'
+import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
+import { notifyLambdaForGraduation } from './services/graduationNotifier.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -3230,7 +3233,9 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                       const ptd = tokenDBEntry.paymentTokenDecimals ?? 6
                       const tokensEarned = (BigInt(api.fee) * ptp) / BigInt(10 ** ptd)
 
-                      await Promise.all([
+                      // Increment earnings and virtual distributed in parallel
+                      // incrementVirtualDistributed uses a Firestore transaction for atomicity
+                      const [, incrementResult] = await Promise.all([
                         earningsService.incrementEarnings(
                           tokenEntry.id,
                           userAddress,
@@ -3243,6 +3248,30 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                         ),
                       ])
                       console.log(`✅ Earnings tracked: ${tokensEarned.toString()} tokens for ${userAddress}`)
+
+                      // Check if graduation threshold was crossed
+                      if (!incrementResult.graduated) {
+                        // Graduation thresholds: EVM (18 decimals) vs Solana (9 decimals)
+                        const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+                        const isSolana = solanaChains.includes(incrementResult.chainId)
+                        const threshold = isSolana
+                          ? BigInt("625000000000000000")        // 625M with 9 decimals
+                          : BigInt("625000000000000000000000000") // 625M with 18 decimals
+
+                        if (BigInt(incrementResult.newTotal) >= threshold) {
+                          console.log(`🎓 Graduation threshold crossed for ${tokenEntry.id}! Dispatching graduation task...`)
+                          try {
+                            await dispatchGraduationTask({
+                              tokenAddress: tokenEntry.id,
+                              chainId: incrementResult.chainId,
+                              virtualDistributed: incrementResult.newTotal,
+                              totalFeesCollected: incrementResult.totalFeesCollected,
+                            })
+                          } catch (dispatchErr) {
+                            console.error("⚠️  Graduation dispatch error (non-blocking):", dispatchErr)
+                          }
+                        }
+                      }
                     } catch (earningsError) {
                       console.error("⚠️  Earnings tracking error (non-blocking):", earningsError)
                     }
@@ -4560,6 +4589,195 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
     console.error("Error in SSE stream:", error)
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`)
     res.end()
+  }
+})
+
+/**
+ * INTERNAL GRADUATION ENDPOINT
+ * Called by Cloud Tasks to build Merkle tree and trigger Lambda for on-chain graduation.
+ * Auth: X-Graduation-Secret header must match GRADUATION_INTERNAL_SECRET env var.
+ */
+app.post('/internal/graduate/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  console.log(`🎓 Graduation task received for ${tokenAddress}`)
+
+  try {
+    if (!dynamoDBService || !earningsService || !merkleTreeService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    // Short-circuit if already graduated
+    const token = await dynamoDBService.getItem(tokenAddress)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+    if (token.graduated) {
+      console.log(`✅ Token ${tokenAddress} already graduated, skipping`)
+      return res.status(200).json({ status: 'already_graduated' })
+    }
+
+    // Acquire graduation lock (Layer 3)
+    const lockAcquired = await acquireGraduationLock(tokenAddress)
+    if (!lockAcquired) {
+      return res.status(409).json({ error: 'Graduation already in progress' })
+    }
+
+    try {
+      // Fetch all earnings for this token
+      const earnings = await earningsService.getEarningsByToken(tokenAddress)
+      if (earnings.length === 0) {
+        console.error(`❌ No earnings found for ${tokenAddress}`)
+        await releaseGraduationLock(tokenAddress)
+        return res.status(400).json({ error: 'No earnings data for tree generation' })
+      }
+
+      // Build Merkle tree from earnings
+      const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree')
+      const leaves: [string, string][] = earnings.map(e => [e.userAddress, e.totalTokensEarned])
+      const tree = StandardMerkleTree.of(leaves, ['address', 'uint256'])
+      const merkleRoot = tree.root
+
+      console.log(`🌳 Merkle tree built for ${tokenAddress}: ${earnings.length} leaves, root: ${merkleRoot}`)
+
+      // Store Merkle tree in Firestore
+      const totalTokens = earnings.reduce(
+        (sum, e) => sum + BigInt(e.totalTokensEarned),
+        BigInt(0)
+      ).toString()
+
+      await merkleTreeService.storeMerkleTree(tokenAddress, {
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+        leaves: earnings.map((e, i) => ({
+          address: e.userAddress,
+          amount: e.totalTokensEarned,
+          index: i,
+        })),
+        treeDump: JSON.stringify(tree.dump()),
+        generatedAt: new Date().toISOString(),
+        chainId: token.chainId,
+      })
+
+      // Set merkleRoot on token entry (graduated stays false until Lambda confirms)
+      const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+        .collection('iao-tokens')
+        .doc(tokenAddress.toLowerCase())
+      await docRef.update({
+        merkleRoot,
+        updatedAt: new Date().toISOString(),
+      })
+
+      // Notify Lambda for on-chain graduation TX
+      await notifyLambdaForGraduation({
+        tokenAddress,
+        chainId: token.chainId,
+        merkleRoot,
+        virtualDistributed: token.virtualTokensDistributed || "0",
+        totalFeesCollected: token.totalFeesCollected || "0",
+      })
+
+      await releaseGraduationLock(tokenAddress)
+
+      console.log(`✅ Graduation processing complete for ${tokenAddress}, Lambda notified`)
+      return res.status(200).json({
+        status: 'graduation_initiated',
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+      })
+    } catch (innerErr) {
+      // Release lock on failure so retries can proceed
+      await releaseGraduationLock(tokenAddress)
+      throw innerErr
+    }
+  } catch (error: any) {
+    console.error(`❌ Graduation processing failed for ${tokenAddress}:`, error)
+    // Return 500 so Cloud Tasks retries
+    return res.status(500).json({ error: 'Graduation processing failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION CALLBACK ENDPOINT
+ * Called by Lambda after on-chain graduation TX succeeds to set graduated=true.
+ */
+app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!dynamoDBService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const { txHash } = req.body || {}
+
+    const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+      .collection('iao-tokens')
+      .doc(tokenAddress.toLowerCase())
+
+    await docRef.update({
+      graduated: true,
+      updatedAt: new Date().toISOString(),
+    })
+
+    // Update merkle tree with on-chain tx hash if provided (non-fatal if doc doesn't exist)
+    if (txHash && merkleTreeService) {
+      try {
+        await merkleTreeService.setOnChainTxHash(tokenAddress, txHash)
+      } catch (merkleErr: any) {
+        console.warn(`⚠️  Could not update merkle tree tx hash for ${tokenAddress}:`, merkleErr.message)
+      }
+    }
+
+    console.log(`✅ Graduation confirmed for ${tokenAddress} (tx: ${txHash || 'unknown'})`)
+    return res.status(200).json({ status: 'confirmed' })
+  } catch (error: any) {
+    console.error(`❌ Graduation confirmation failed for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Confirmation failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION EARNINGS ENDPOINT
+ * Called by Solana Lambda to fetch earnings breakdown for batch_mint.
+ */
+app.get('/internal/graduation-earnings/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: 'Earnings service not initialized' })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenAddress)
+    return res.status(200).json({
+      earnings: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+      })),
+    })
+  } catch (error: any) {
+    console.error(`❌ Failed to fetch graduation earnings for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Failed to fetch earnings', message: error.message })
   }
 })
 

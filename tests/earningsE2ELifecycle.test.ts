@@ -25,32 +25,34 @@ vi.mock('../src/db/firestoreClient.js', () => {
     })),
   });
 
+  const createDocRef = (collectionName: string, docId: string) => {
+    const key = `${collectionName}/${docId}`;
+    return {
+      _testKey: key,
+      get: vi.fn().mockImplementation(async () => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        const data = testData.get(key);
+        return { exists: data !== undefined, data: () => data };
+      }),
+      set: vi.fn().mockImplementation(async (data: any) => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        testData.set(key, data);
+      }),
+      update: vi.fn().mockImplementation(async (updates: any) => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        const existing = testData.get(key) || {};
+        testData.set(key, { ...existing, ...updates });
+      }),
+      delete: vi.fn().mockImplementation(async () => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        testData.delete(key);
+      }),
+    };
+  };
+
   const mockFirestore = {
     collection: vi.fn().mockImplementation((collectionName: string) => ({
-      doc: vi.fn().mockImplementation((docId: string) => {
-        const key = `${collectionName}/${docId}`;
-        return {
-          _testKey: key,
-          get: vi.fn().mockImplementation(async () => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            const data = testData.get(key);
-            return { exists: data !== undefined, data: () => data };
-          }),
-          set: vi.fn().mockImplementation(async (data: any) => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            testData.set(key, data);
-          }),
-          update: vi.fn().mockImplementation(async (updates: any) => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            const existing = testData.get(key) || {};
-            testData.set(key, { ...existing, ...updates });
-          }),
-          delete: vi.fn().mockImplementation(async () => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            testData.delete(key);
-          }),
-        };
-      }),
+      doc: vi.fn().mockImplementation((docId: string) => createDocRef(collectionName, docId)),
       where: vi.fn().mockImplementation((field: string, op: string, value: any) => ({
         limit: vi.fn().mockReturnThis(),
         get: vi.fn().mockImplementation(async () => {
@@ -75,6 +77,27 @@ vi.mock('../src/db/firestoreClient.js', () => {
         return createMockSnapshot(matches);
       }),
     })),
+    runTransaction: vi.fn().mockImplementation(async (callback: any) => {
+      // Simulate a Firestore transaction by providing a txn object
+      // that reads/writes directly to testData (same as the doc ref methods)
+      const txn = {
+        get: vi.fn().mockImplementation(async (docRef: any) => {
+          const key = docRef._testKey;
+          const data = testData.get(key);
+          return { exists: data !== undefined, data: () => data };
+        }),
+        update: vi.fn().mockImplementation((docRef: any, updates: any) => {
+          const key = docRef._testKey;
+          const existing = testData.get(key) || {};
+          testData.set(key, { ...existing, ...updates });
+        }),
+        set: vi.fn().mockImplementation((docRef: any, data: any) => {
+          const key = docRef._testKey;
+          testData.set(key, data);
+        }),
+      };
+      return callback(txn);
+    }),
   };
 
   return {
