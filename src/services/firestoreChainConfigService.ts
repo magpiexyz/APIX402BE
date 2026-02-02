@@ -51,7 +51,7 @@ export const DEFAULT_CHAIN_CONFIGS: ChainConfigEntry[] = [
     chainType: "evm",
     name: "Base Sepolia",
     shortName: "Base",
-    factoryAddress: "0xF110bA6BBc7cD595842B6b56ab870faC811e41B5",
+    factoryAddress: "0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800",
     paymentTokenAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     paymentTokenSymbol: "USDC",
     paymentTokenDecimals: 6,

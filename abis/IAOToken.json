@@ -97,7 +97,30 @@
   },
   {
     "type": "function",
-    "name": "batchMintWithAmount",
+    "name": "batchRefundWithAmount",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "txHashes",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
+      },
+      {
+        "name": "feeAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "batchTransferWithAmount",
     "inputs": [
       {
         "name": "to",
@@ -125,7 +148,7 @@
   },
   {
     "type": "function",
-    "name": "batchRefundWithAmount",
+    "name": "batchTransferWithVariableAmounts",
     "inputs": [
       {
         "name": "to",
@@ -133,14 +156,19 @@
         "internalType": "address[]"
       },
       {
+        "name": "tokenAmounts",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
         "name": "txHashes",
         "type": "bytes32[]",
         "internalType": "bytes32[]"
       },
       {
-        "name": "feeAmount",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "fees",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
       }
     ],
     "outputs": [],
@@ -174,6 +202,24 @@
         "name": "s",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claim",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proof",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
       }
     ],
     "outputs": [],
@@ -215,6 +261,39 @@
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "deployLiquidity",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "distributePendingFees",
+    "inputs": [
+      {
+        "name": "feeAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "distributorAddress",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -261,6 +340,29 @@
   },
   {
     "type": "function",
+    "name": "graduateWithMerkle",
+    "inputs": [
+      {
+        "name": "_merkleRoot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "virtualDistributed",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "actualFeesCollected",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "graduationThreshold",
     "inputs": [],
     "outputs": [
@@ -274,7 +376,26 @@
   },
   {
     "type": "function",
-    "name": "hasMintedOrRefunded",
+    "name": "hasClaimed",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hasProcessedOrRefunded",
     "inputs": [
       {
         "name": "",
@@ -375,6 +496,11 @@
         "internalType": "address"
       },
       {
+        "name": "_distributorAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "_sqrtPriceX96Token0",
         "type": "uint160",
         "internalType": "uint160"
@@ -423,6 +549,19 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "merkleRoot",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -485,30 +624,6 @@
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "purchaseTokens",
-    "inputs": [
-      {
-        "name": "amountIn",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "amountOutMinimum",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "amountOut",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -781,25 +896,6 @@
   },
   {
     "type": "function",
-    "name": "unlockCallback",
-    "inputs": [
-      {
-        "name": "data",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "unpause",
     "inputs": [],
     "outputs": [],
@@ -883,6 +979,37 @@
   },
   {
     "type": "event",
+    "name": "BatchTransferWithVariableAmounts",
+    "inputs": [
+      {
+        "name": "recipients",
+        "type": "address[]",
+        "indexed": false,
+        "internalType": "address[]"
+      },
+      {
+        "name": "tokenAmounts",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "txHashes",
+        "type": "bytes32[]",
+        "indexed": false,
+        "internalType": "bytes32[]"
+      },
+      {
+        "name": "fees",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "EIP712DomainChanged",
     "inputs": [],
     "anonymous": false
@@ -921,6 +1048,19 @@
   },
   {
     "type": "event",
+    "name": "MerkleRootSet",
+    "inputs": [
+      {
+        "name": "merkleRoot",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferred",
     "inputs": [
       {
@@ -947,6 +1087,25 @@
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TokensClaimed",
+    "inputs": [
+      {
+        "name": "user",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -1004,10 +1163,31 @@
   },
   {
     "type": "error",
-    "name": "AlreadyMinted",
+    "name": "AlreadyClaimed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyProcessed",
     "inputs": [
       {
         "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "txHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "AlreadyProcessed",
+    "inputs": [
+      {
+        "name": "user",
         "type": "address",
         "internalType": "address"
       },
@@ -1033,6 +1213,11 @@
         "internalType": "bytes32"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "ArrayLengthMismatch",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1147,7 +1332,7 @@
   },
   {
     "type": "error",
-    "name": "InsufficientOutput",
+    "name": "InvalidMerkleRoot",
     "inputs": []
   },
   {
@@ -1157,7 +1342,7 @@
   },
   {
     "type": "error",
-    "name": "InvalidPoolManager",
+    "name": "InvalidProof",
     "inputs": []
   },
   {
@@ -1215,17 +1400,17 @@
   },
   {
     "type": "error",
-    "name": "InvalidSwapDeltas",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "MaxSubscriptionCountExceeded",
     "inputs": []
   },
   {
     "type": "error",
     "name": "MaxSubscriptionCountNotExceeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MerkleRootNotSet",
     "inputs": []
   },
   {

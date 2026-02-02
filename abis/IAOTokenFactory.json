@@ -161,6 +161,19 @@
   },
   {
     "type": "function",
+    "name": "setTokenDistributor",
+    "inputs": [
+      {
+        "name": "_tokenDistributor",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setTokenImplementation",
     "inputs": [
       {
@@ -171,6 +184,19 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "tokenDistributor",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -319,6 +345,19 @@
       },
       {
         "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TokenDistributorSet",
+    "inputs": [
+      {
+        "name": "tokenDistributor",
         "type": "address",
         "indexed": true,
         "internalType": "address"

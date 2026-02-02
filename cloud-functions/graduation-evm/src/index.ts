@@ -1,20 +1,21 @@
 /**
- * EVM Graduation Lambda
+ * EVM Graduation Cloud Function
  *
- * Receives graduation events from Cloud Tasks (via the backend's graduationNotifier)
- * and executes on-chain graduation via TokenDistributor.graduateTokenWithMerkle().
+ * Receives graduation events via HTTP POST and executes on-chain graduation
+ * via TokenDistributor.graduateTokenWithMerkle().
  *
  * After successful tx, POSTs back to /internal/graduation-confirm/:tokenAddress
  * so the backend sets graduated=true in Firestore.
  *
  * Environment variables:
- *   AUTOMATION_PRIVATE_KEY - Private key of the minter wallet
- *   RPC_URL               - EVM RPC endpoint (Base Sepolia, etc.)
- *   TOKEN_DISTRIBUTOR      - Address of the TokenDistributor contract
- *   BACKEND_URL            - Cloud Run service URL (e.g. https://apix-backend.run.app)
- *   GRADUATION_INTERNAL_SECRET - Shared secret for internal endpoints
+ *   AUTOMATION_PRIVATE_KEY         - Private key of the minter wallet
+ *   RPC_URL                        - EVM RPC endpoint (Base Sepolia, etc.)
+ *   TOKEN_DISTRIBUTOR              - Address of the TokenDistributor contract
+ *   BACKEND_URL                    - Cloud Run service URL (e.g. https://apix-backend.run.app)
+ *   GRADUATION_INTERNAL_SECRET     - Shared secret for internal endpoints
  */
 
+import { HttpFunction } from '@google-cloud/functions-framework';
 import { ethers } from 'ethers';
 
 const TOKEN_DISTRIBUTOR_ABI = [
@@ -30,16 +31,23 @@ interface GraduationEvent {
   totalFeesCollected: string;
 }
 
-interface LambdaResponse {
-  statusCode: number;
-  body: string;
-}
+export const graduateEvm: HttpFunction = async (req, res) => {
+  // Verify shared secret
+  const expectedSecret = process.env.GRADUATION_INTERNAL_SECRET;
+  if (expectedSecret) {
+    const providedSecret = req.headers['x-graduation-secret'];
+    if (providedSecret !== expectedSecret) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+  }
 
-export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
+  const event: GraduationEvent = req.body;
   console.log('Graduation event received:', JSON.stringify(event));
 
   if (event.action !== 'graduate') {
-    return { statusCode: 400, body: JSON.stringify({ error: `Unknown action: ${event.action}` }) };
+    res.status(400).json({ error: `Unknown action: ${event.action}` });
+    return;
   }
 
   const { tokenAddress, merkleRoot, virtualDistributed, totalFeesCollected } = event;
@@ -52,7 +60,8 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
 
   if (!privateKey || !rpcUrl || !distributorAddress) {
     console.error('Missing required environment variables');
-    return { statusCode: 500, body: JSON.stringify({ error: 'Missing env vars' }) };
+    res.status(500).json({ error: 'Missing env vars' });
+    return;
   }
 
   try {
@@ -98,24 +107,18 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
       }
     }
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        status: 'graduated',
-        txHash: tx.hash,
-        blockNumber: receipt.blockNumber,
-        tokenAddress,
-      }),
-    };
+    res.status(200).json({
+      status: 'graduated',
+      txHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+      tokenAddress,
+    });
   } catch (err: any) {
     console.error('Graduation TX failed:', err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'Graduation TX failed',
-        message: err.message,
-        tokenAddress,
-      }),
-    };
+    res.status(500).json({
+      error: 'Graduation TX failed',
+      message: err.message,
+      tokenAddress,
+    });
   }
-}
+};

@@ -1,25 +1,11 @@
 /**
- * Graduation Notifier — Direct Lambda Invocation
+ * Graduation Notifier — HTTP Cloud Function Invocation
  *
- * Invokes the appropriate AWS Lambda (EVM or Solana) to execute
- * the on-chain graduation transaction. Uses async invocation
- * (InvocationType: Event) so the backend doesn't wait for completion.
+ * Invokes the appropriate GCP Cloud Function (EVM or Solana) to execute
+ * the on-chain graduation transaction via HTTP POST.
  *
- * The Lambda holds the AUTOMATION_PRIVATE_KEY — the backend never touches private keys.
+ * The Cloud Function holds the AUTOMATION_PRIVATE_KEY — the backend never touches private keys.
  */
-
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-
-let lambdaClient: LambdaClient | null = null;
-
-function getLambdaClient(): LambdaClient {
-  if (!lambdaClient) {
-    lambdaClient = new LambdaClient({
-      region: process.env.AWS_REGION || 'us-east-1',
-    });
-  }
-  return lambdaClient;
-}
 
 export interface GraduationNotification {
   tokenAddress: string;
@@ -30,53 +16,52 @@ export interface GraduationNotification {
 }
 
 /**
- * Determine which Lambda function to invoke based on chainId.
+ * Determine which Cloud Function URL to use based on chainId.
  * EVM chains use numeric chainIds, Solana uses "devnet"/"mainnet-beta".
  */
-function getLambdaFunctionName(chainId: string): string | null {
+function getCloudFunctionUrl(chainId: string): string | null {
   const solanaChains = ['devnet', 'mainnet-beta', 'testnet'];
 
   if (solanaChains.includes(chainId)) {
-    return process.env.GRADUATION_LAMBDA_SOLANA || null;
+    return process.env.GRADUATION_FUNCTION_SOLANA_URL || null;
   }
   // Numeric chainId = EVM
-  return process.env.GRADUATION_LAMBDA_EVM || null;
+  return process.env.GRADUATION_FUNCTION_EVM_URL || null;
 }
 
 /**
- * Invoke the Lambda for on-chain graduation.
- * Uses InvocationType: Event for async fire-and-forget with AWS-managed retries.
+ * Invoke the Cloud Function for on-chain graduation via HTTP POST.
  */
-export async function notifyLambdaForGraduation(notification: GraduationNotification): Promise<void> {
-  const functionName = getLambdaFunctionName(notification.chainId);
+export async function notifyForGraduation(notification: GraduationNotification): Promise<void> {
+  const cloudFunctionUrl = getCloudFunctionUrl(notification.chainId);
 
-  if (!functionName) {
-    console.error(`❌ No Lambda function configured for chainId ${notification.chainId}`);
-    throw new Error(`No graduation Lambda configured for chain ${notification.chainId}`);
+  if (!cloudFunctionUrl) {
+    console.error(`❌ No Cloud Function configured for chainId ${notification.chainId}`);
+    throw new Error(`No graduation Cloud Function configured for chain ${notification.chainId}`);
   }
 
-  const client = getLambdaClient();
+  const secret = process.env.GRADUATION_INTERNAL_SECRET;
 
   try {
-    const command = new InvokeCommand({
-      FunctionName: functionName,
-      InvocationType: 'Event', // Async — fire-and-forget with retries
-      Payload: JSON.stringify({
+    const response = await fetch(cloudFunctionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(secret ? { 'X-Graduation-Secret': secret } : {}),
+      },
+      body: JSON.stringify({
         action: 'graduate',
         ...notification,
       }),
     });
 
-    const response = await client.send(command);
-
-    // StatusCode 202 = accepted for async invocation
-    if (response.StatusCode === 202) {
-      console.log(`✅ Lambda invoked for graduation: ${functionName} (token: ${notification.tokenAddress})`);
+    if (response.ok) {
+      console.log(`✅ Cloud Function invoked for graduation: ${cloudFunctionUrl} (token: ${notification.tokenAddress})`);
     } else {
-      console.warn(`⚠️  Unexpected Lambda status code: ${response.StatusCode} for ${notification.tokenAddress}`);
+      console.warn(`⚠️  Unexpected Cloud Function status: ${response.status} for ${notification.tokenAddress}`);
     }
   } catch (err) {
-    console.error(`❌ Failed to invoke Lambda ${functionName} for ${notification.tokenAddress}:`, err);
+    console.error(`❌ Failed to invoke Cloud Function ${cloudFunctionUrl} for ${notification.tokenAddress}:`, err);
     throw err;
   }
 }

@@ -1,8 +1,7 @@
 /**
- * Solana Graduation Lambda
+ * Solana Graduation Cloud Function
  *
- * Receives graduation events from Cloud Tasks (via the backend's graduationNotifier)
- * and executes on-chain graduation by:
+ * Receives graduation events via HTTP POST and executes on-chain graduation by:
  *   1. Fetching earnings breakdown from the backend
  *   2. Calling batch_mint in chunks of 50 to distribute accumulated tokens
  *   3. Calling deploy_liquidity once threshold is crossed
@@ -16,12 +15,14 @@
  *   GRADUATION_INTERNAL_SECRET     - Shared secret for internal endpoints
  */
 
+import { HttpFunction } from '@google-cloud/functions-framework';
 import {
   Connection,
   Keypair,
   PublicKey,
   Transaction,
   SystemProgram,
+  TransactionInstruction,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
@@ -31,7 +32,7 @@ const MAX_BATCH_SIZE = 50;
 
 interface GraduationEvent {
   action: string;
-  tokenAddress: string; // Solana: this is the token_state PDA or the mint address — we use serverSlug to derive
+  tokenAddress: string;
   chainId: string;
   merkleRoot: string;
   virtualDistributed: string;
@@ -41,11 +42,6 @@ interface GraduationEvent {
 interface EarningEntry {
   userAddress: string;
   totalTokensEarned: string;
-}
-
-interface LambdaResponse {
-  statusCode: number;
-  body: string;
 }
 
 function getProgramId(): PublicKey {
@@ -71,7 +67,6 @@ function deriveMintAuthorityPDA(tokenStatePubkey: PublicKey, programId: PublicKe
 }
 
 async function fetchEarnings(backendUrl: string, tokenAddress: string, secret?: string): Promise<EarningEntry[]> {
-  // The backend stores earnings keyed by token address
   const url = `${backendUrl}/internal/graduation-earnings/${tokenAddress}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (secret) headers['X-Graduation-Secret'] = secret;
@@ -84,10 +79,6 @@ async function fetchEarnings(backendUrl: string, tokenAddress: string, secret?: 
   return data.earnings;
 }
 
-/**
- * Build and send batch_mint instruction via Anchor-compatible raw instruction.
- * Since we can't use Anchor SDK directly in Lambda, we encode the instruction manually.
- */
 async function batchMintChunk(
   connection: Connection,
   automationWallet: Keypair,
@@ -100,30 +91,25 @@ async function batchMintChunk(
   amounts: bigint[],
   fees: bigint[],
 ): Promise<string> {
-  // We need to build the Anchor instruction manually
-  // Anchor discriminator for "batch_mint" = SHA256("global:batch_mint")[0..8]
   const { createHash } = await import('crypto');
   const discriminator = createHash('sha256')
     .update('global:batch_mint')
     .digest()
     .subarray(0, 8);
 
-  // Encode args: Vec<Pubkey>, Vec<u64>, Vec<u64>
   const recipientsData = encodeVecPublicKey(recipients);
   const amountsData = encodeVecU64(amounts);
   const feesData = encodeVecU64(fees);
 
   const instructionData = Buffer.concat([discriminator, recipientsData, amountsData, feesData]);
 
-  // Get associated token accounts for all recipients
   const recipientATAs: PublicKey[] = [];
-  const ataInstructions: any[] = [];
+  const ataInstructions: TransactionInstruction[] = [];
 
   for (const recipient of recipients) {
     const ata = await getAssociatedTokenAddress(mint, recipient);
     recipientATAs.push(ata);
 
-    // Check if ATA exists
     const ataInfo = await connection.getAccountInfo(ata);
     if (!ataInfo) {
       ataInstructions.push(
@@ -137,8 +123,6 @@ async function batchMintChunk(
     }
   }
 
-  // Build instruction
-  const { TransactionInstruction } = await import('@solana/web3.js');
   const batchMintIx = new TransactionInstruction({
     programId,
     keys: [
@@ -149,14 +133,12 @@ async function batchMintChunk(
       { pubkey: automationWallet.publicKey, isSigner: true, isWritable: true },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      // remaining_accounts: recipient token accounts
       ...recipientATAs.map((ata) => ({ pubkey: ata, isSigner: false, isWritable: true })),
     ],
     data: instructionData,
   });
 
   const tx = new Transaction();
-  // Add ATA creation instructions first
   for (const ix of ataInstructions) {
     tx.add(ix);
   }
@@ -185,7 +167,6 @@ async function deployLiquidity(
     .digest()
     .subarray(0, 8);
 
-  const { TransactionInstruction } = await import('@solana/web3.js');
   const ix = new TransactionInstruction({
     programId,
     keys: [
@@ -227,11 +208,23 @@ function encodeVecU64(values: bigint[]): Buffer {
   return Buffer.concat([lenBuf, ...valueBufs]);
 }
 
-export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
+export const graduateSolana: HttpFunction = async (req, res) => {
+  // Verify shared secret
+  const expectedSecret = process.env.GRADUATION_INTERNAL_SECRET;
+  if (expectedSecret) {
+    const providedSecret = req.headers['x-graduation-secret'];
+    if (providedSecret !== expectedSecret) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+  }
+
+  const event: GraduationEvent = req.body;
   console.log('Solana graduation event received:', JSON.stringify(event));
 
   if (event.action !== 'graduate') {
-    return { statusCode: 400, body: JSON.stringify({ error: `Unknown action: ${event.action}` }) };
+    res.status(400).json({ error: `Unknown action: ${event.action}` });
+    return;
   }
 
   const { tokenAddress } = event;
@@ -243,7 +236,8 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
 
   if (!privateKey || !rpcUrl) {
     console.error('Missing required environment variables');
-    return { statusCode: 500, body: JSON.stringify({ error: 'Missing env vars' }) };
+    res.status(500).json({ error: 'Missing env vars' });
+    return;
   }
 
   try {
@@ -255,7 +249,6 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
     const [factoryState] = deriveFactoryStatePDA(programId);
 
     // Fetch token state to get serverSlug and mint
-    // We need to read the token state account to get the actual data
     const tokenStatePubkey = new PublicKey(tokenAddress);
     const tokenStateInfo = await connection.getAccountInfo(tokenStatePubkey);
     if (!tokenStateInfo) {
@@ -263,7 +256,6 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
     }
 
     // Decode token state (Anchor discriminator + borsh)
-    // Skip 8-byte discriminator, then decode fields
     const data = tokenStateInfo.data;
     const offset = 8; // Skip Anchor discriminator
 
@@ -272,7 +264,6 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
     const serverSlug = data.subarray(offset + 4, offset + 4 + slugLen).toString('utf8');
 
     // Read mint pubkey (after slug + name + symbol)
-    // We need to skip: slug(4+len) + name(4+len) + symbol(4+len)
     let pos = offset + 4 + slugLen;
     const nameLen = data.readUInt32LE(pos);
     pos += 4 + nameLen;
@@ -302,7 +293,6 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
       const chunk = earnings.slice(i, i + MAX_BATCH_SIZE);
       const recipients = chunk.map((e) => new PublicKey(e.userAddress));
       const amounts = chunk.map((e) => BigInt(e.totalTokensEarned));
-      // Fees are 0 since they were already tracked per-call
       const fees = chunk.map(() => BigInt(0));
 
       console.log(`Batch minting chunk ${Math.floor(i / MAX_BATCH_SIZE) + 1}: ${chunk.length} recipients`);
@@ -359,24 +349,18 @@ export async function handler(event: GraduationEvent): Promise<LambdaResponse> {
       }
     }
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        status: 'graduated',
-        txHash: graduationSig,
-        tokenAddress,
-        batchesProcessed: Math.ceil(earnings.length / MAX_BATCH_SIZE),
-      }),
-    };
+    res.status(200).json({
+      status: 'graduated',
+      txHash: graduationSig,
+      tokenAddress,
+      batchesProcessed: Math.ceil(earnings.length / MAX_BATCH_SIZE),
+    });
   } catch (err: any) {
     console.error('Solana graduation failed:', err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'Graduation failed',
-        message: err.message,
-        tokenAddress,
-      }),
-    };
+    res.status(500).json({
+      error: 'Graduation failed',
+      message: err.message,
+      tokenAddress,
+    });
   }
-}
+};

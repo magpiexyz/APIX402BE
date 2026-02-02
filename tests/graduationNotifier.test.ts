@@ -1,25 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-
-const mockSend = vi.fn();
-
-vi.mock('@aws-sdk/client-lambda', () => ({
-  LambdaClient: class {
-    send = mockSend;
-  },
-  InvokeCommand: class {
-    FunctionName: string;
-    InvocationType: string;
-    Payload: string;
-    constructor(params: any) {
-      Object.assign(this, params);
-    }
-  },
-}));
-
-import { notifyLambdaForGraduation, type GraduationNotification } from '../src/services/graduationNotifier.js';
+import { notifyForGraduation, type GraduationNotification } from '../src/services/graduationNotifier.js';
 
 describe('graduationNotifier', () => {
   const originalEnv = process.env;
+  const mockFetch = vi.fn();
 
   const evmNotification: GraduationNotification = {
     tokenAddress: '0xabc123',
@@ -41,122 +25,148 @@ describe('graduationNotifier', () => {
     vi.clearAllMocks();
     process.env = {
       ...originalEnv,
-      AWS_REGION: 'us-east-1',
-      GRADUATION_LAMBDA_EVM: 'batch-transfer-x402',
-      GRADUATION_LAMBDA_SOLANA: 'batch-transfer-x402-solana',
+      GRADUATION_FUNCTION_EVM_URL: 'https://graduation-evm-abc123.run.app',
+      GRADUATION_FUNCTION_SOLANA_URL: 'https://graduation-solana-abc123.run.app',
+      GRADUATION_INTERNAL_SECRET: 'test-secret',
     };
-    mockSend.mockResolvedValue({ StatusCode: 202 });
+    mockFetch.mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = mockFetch;
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.restoreAllMocks();
   });
 
   describe('EVM chains', () => {
-    it('should invoke EVM Lambda for numeric chainId', async () => {
-      await notifyLambdaForGraduation(evmNotification);
+    it('should invoke EVM Cloud Function for numeric chainId', async () => {
+      await notifyForGraduation(evmNotification);
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const command = mockSend.mock.calls[0][0];
-      expect(command.FunctionName).toBe('batch-transfer-x402');
-      expect(command.InvocationType).toBe('Event');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://graduation-evm-abc123.run.app',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            'X-Graduation-Secret': 'test-secret',
+          }),
+        }),
+      );
 
-      const payload = JSON.parse(command.Payload);
-      expect(payload.action).toBe('graduate');
-      expect(payload.tokenAddress).toBe('0xabc123');
-      expect(payload.chainId).toBe('84532');
-      expect(payload.merkleRoot).toBe('0xdeadbeef');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.action).toBe('graduate');
+      expect(body.tokenAddress).toBe('0xabc123');
+      expect(body.chainId).toBe('84532');
+      expect(body.merkleRoot).toBe('0xdeadbeef');
     });
 
-    it('should invoke EVM Lambda for different EVM chainIds', async () => {
+    it('should invoke EVM Cloud Function for different EVM chainIds', async () => {
       for (const chainId of ['1', '8453', '84532', '137', '42161']) {
         vi.clearAllMocks();
-        mockSend.mockResolvedValue({ StatusCode: 202 });
-        await notifyLambdaForGraduation({ ...evmNotification, chainId });
-        const command = mockSend.mock.calls[0][0];
-        expect(command.FunctionName).toBe('batch-transfer-x402');
+        mockFetch.mockResolvedValue({ ok: true, status: 200 });
+        await notifyForGraduation({ ...evmNotification, chainId });
+        expect(mockFetch).toHaveBeenCalledWith(
+          'https://graduation-evm-abc123.run.app',
+          expect.anything(),
+        );
       }
     });
   });
 
   describe('Solana chains', () => {
-    it('should invoke Solana Lambda for devnet', async () => {
-      await notifyLambdaForGraduation(solanaNotification);
+    it('should invoke Solana Cloud Function for devnet', async () => {
+      await notifyForGraduation(solanaNotification);
 
-      const command = mockSend.mock.calls[0][0];
-      expect(command.FunctionName).toBe('batch-transfer-x402-solana');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://graduation-solana-abc123.run.app',
+        expect.anything(),
+      );
     });
 
-    it('should invoke Solana Lambda for mainnet-beta', async () => {
-      await notifyLambdaForGraduation({ ...solanaNotification, chainId: 'mainnet-beta' });
+    it('should invoke Solana Cloud Function for mainnet-beta', async () => {
+      await notifyForGraduation({ ...solanaNotification, chainId: 'mainnet-beta' });
 
-      const command = mockSend.mock.calls[0][0];
-      expect(command.FunctionName).toBe('batch-transfer-x402-solana');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://graduation-solana-abc123.run.app',
+        expect.anything(),
+      );
     });
 
-    it('should invoke Solana Lambda for testnet', async () => {
-      await notifyLambdaForGraduation({ ...solanaNotification, chainId: 'testnet' });
+    it('should invoke Solana Cloud Function for testnet', async () => {
+      await notifyForGraduation({ ...solanaNotification, chainId: 'testnet' });
 
-      const command = mockSend.mock.calls[0][0];
-      expect(command.FunctionName).toBe('batch-transfer-x402-solana');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://graduation-solana-abc123.run.app',
+        expect.anything(),
+      );
     });
   });
 
   describe('error handling', () => {
-    it('should throw when no Lambda configured for chainId', async () => {
-      delete process.env.GRADUATION_LAMBDA_EVM;
+    it('should throw when no Cloud Function configured for chainId', async () => {
+      delete process.env.GRADUATION_FUNCTION_EVM_URL;
 
-      await expect(notifyLambdaForGraduation(evmNotification)).rejects.toThrow(
-        'No graduation Lambda configured for chain 84532'
+      await expect(notifyForGraduation(evmNotification)).rejects.toThrow(
+        'No graduation Cloud Function configured for chain 84532'
       );
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should throw when no Solana Lambda configured', async () => {
-      delete process.env.GRADUATION_LAMBDA_SOLANA;
+    it('should throw when no Solana Cloud Function configured', async () => {
+      delete process.env.GRADUATION_FUNCTION_SOLANA_URL;
 
-      await expect(notifyLambdaForGraduation(solanaNotification)).rejects.toThrow(
-        'No graduation Lambda configured for chain devnet'
+      await expect(notifyForGraduation(solanaNotification)).rejects.toThrow(
+        'No graduation Cloud Function configured for chain devnet'
       );
     });
 
-    it('should throw on Lambda invocation error', async () => {
-      mockSend.mockRejectedValue(new Error('AccessDeniedException'));
+    it('should throw on fetch error', async () => {
+      mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
 
-      await expect(notifyLambdaForGraduation(evmNotification)).rejects.toThrow('AccessDeniedException');
+      await expect(notifyForGraduation(evmNotification)).rejects.toThrow('ECONNREFUSED');
     });
 
-    it('should not throw on unexpected status code (just warns)', async () => {
-      mockSend.mockResolvedValue({ StatusCode: 500 });
+    it('should not throw on non-ok response (just warns)', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 500 });
 
       // Should not throw — just logs a warning
-      await expect(notifyLambdaForGraduation(evmNotification)).resolves.toBeUndefined();
+      await expect(notifyForGraduation(evmNotification)).resolves.toBeUndefined();
     });
   });
 
   describe('payload format', () => {
     it('should include action: graduate in payload', async () => {
-      await notifyLambdaForGraduation(evmNotification);
+      await notifyForGraduation(evmNotification);
 
-      const payload = JSON.parse(mockSend.mock.calls[0][0].Payload);
-      expect(payload.action).toBe('graduate');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.action).toBe('graduate');
     });
 
     it('should spread all notification fields into payload', async () => {
-      await notifyLambdaForGraduation(evmNotification);
+      await notifyForGraduation(evmNotification);
 
-      const payload = JSON.parse(mockSend.mock.calls[0][0].Payload);
-      expect(payload).toEqual({
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body).toEqual({
         action: 'graduate',
         ...evmNotification,
       });
     });
 
-    it('should use async invocation (Event type)', async () => {
-      await notifyLambdaForGraduation(evmNotification);
+    it('should send X-Graduation-Secret header when secret is set', async () => {
+      await notifyForGraduation(evmNotification);
 
-      const command = mockSend.mock.calls[0][0];
-      expect(command.InvocationType).toBe('Event');
+      const headers = mockFetch.mock.calls[0][1].headers;
+      expect(headers['X-Graduation-Secret']).toBe('test-secret');
+    });
+
+    it('should not send X-Graduation-Secret header when secret is not set', async () => {
+      delete process.env.GRADUATION_INTERNAL_SECRET;
+
+      await notifyForGraduation(evmNotification);
+
+      const headers = mockFetch.mock.calls[0][1].headers;
+      expect(headers['X-Graduation-Secret']).toBeUndefined();
     });
   });
 });

@@ -29,7 +29,7 @@ import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimite
 import { v2 as cloudinary } from 'cloudinary'
 import { dispatchGraduationTask } from './services/graduationDispatcher.js'
 import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
-import { notifyLambdaForGraduation } from './services/graduationNotifier.js'
+import { notifyForGraduation } from './services/graduationNotifier.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -55,7 +55,7 @@ try {
 }
 
 // IAO Token Factory address (from constants or env)
-const IAO_FACTORY_ADDRESS = "0xF110bA6BBc7cD595842B6b56ab870faC811e41B5";
+const IAO_FACTORY_ADDRESS = "0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800";
 
 // Load environment variables
 config()
@@ -4585,7 +4585,7 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
 
 /**
  * INTERNAL GRADUATION ENDPOINT
- * Called by Cloud Tasks to build Merkle tree and trigger Lambda for on-chain graduation.
+ * Called by Cloud Tasks to build Merkle tree and trigger Cloud Function for on-chain graduation.
  * Auth: X-Graduation-Secret header must match GRADUATION_INTERNAL_SECRET env var.
  */
 app.post('/internal/graduate/:tokenAddress', async (req, res) => {
@@ -4657,7 +4657,7 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
         chainId: token.chainId,
       })
 
-      // Set merkleRoot on token entry (graduated stays false until Lambda confirms)
+      // Set merkleRoot on token entry (graduated stays false until Cloud Function confirms)
       const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
         .collection('iao-tokens')
         .doc(tokenAddress.toLowerCase())
@@ -4666,8 +4666,8 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
         updatedAt: new Date().toISOString(),
       })
 
-      // Notify Lambda for on-chain graduation TX
-      await notifyLambdaForGraduation({
+      // Notify Cloud Function for on-chain graduation TX
+      await notifyForGraduation({
         tokenAddress,
         chainId: token.chainId,
         merkleRoot,
@@ -4677,7 +4677,7 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
 
       await releaseGraduationLock(tokenAddress)
 
-      console.log(`✅ Graduation processing complete for ${tokenAddress}, Lambda notified`)
+      console.log(`✅ Graduation processing complete for ${tokenAddress}, Cloud Function notified`)
       return res.status(200).json({
         status: 'graduation_initiated',
         merkleRoot,
@@ -4698,7 +4698,7 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
 
 /**
  * GRADUATION CALLBACK ENDPOINT
- * Called by Lambda after on-chain graduation TX succeeds to set graduated=true.
+ * Called by Cloud Function after on-chain graduation TX succeeds to set graduated=true.
  */
 app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
   const { tokenAddress } = req.params
@@ -4744,7 +4744,7 @@ app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
 
 /**
  * GRADUATION EARNINGS ENDPOINT
- * Called by Solana Lambda to fetch earnings breakdown for batch_mint.
+ * Called by Solana Cloud Function to fetch earnings breakdown for batch_mint.
  */
 app.get('/internal/graduation-earnings/:tokenAddress', async (req, res) => {
   const { tokenAddress } = req.params
