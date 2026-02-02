@@ -50,10 +50,13 @@ describe('firestoreClient', () => {
       expect(Collections.CHAIN_CONFIGS).toBe('chain-configs');
       expect(Collections.ALERTS).toBe('alerts');
       expect(Collections.WEBHOOKS).toBe('webhooks');
+      expect(Collections.TOKEN_EARNINGS).toBe('token-earnings');
+      expect(Collections.MERKLE_TREES).toBe('merkle-trees');
+      expect(Collections.GRADUATION_LOCKS).toBe('graduation-locks');
     });
 
     it('should have correct number of collections', () => {
-      expect(Object.keys(Collections)).toHaveLength(13);
+      expect(Object.keys(Collections)).toHaveLength(16);
     });
   });
 

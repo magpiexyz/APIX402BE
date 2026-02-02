@@ -118,10 +118,10 @@ vi.mock('../src/db/firestoreClient.js', () => {
 });
 
 // Import after mocking
-import { DynamoDBService, type IAOTokenDBEntry, type ApiEntry } from '../src/services/firestoreTokenService.js';
+import { TokenService, type IAOTokenDBEntry, type ApiEntry } from '../src/services/firestoreTokenService.js';
 
 describe('FirestoreTokenService', () => {
-  let service: DynamoDBService;
+  let service: TokenService;
 
   // Sample test data
   const sampleToken: IAOTokenDBEntry = {
@@ -202,7 +202,7 @@ describe('FirestoreTokenService', () => {
     errorMessage = 'Firestore error';
 
     // Create service instance
-    service = new DynamoDBService('us-west-1', 'apix-iao-tokens');
+    service = new TokenService();
   });
 
   afterEach(() => {

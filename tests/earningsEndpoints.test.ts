@@ -83,7 +83,7 @@ vi.mock('../src/db/firestoreClient.js', () => {
 
 import { EarningsService, type TokenEarningEntry } from '../src/services/firestoreEarningsService.js';
 import { MerkleTreeService } from '../src/services/firestoreMerkleTreeService.js';
-import { DynamoDBService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
+import { TokenService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
 
 // ---- Helper to seed a token in mock Firestore ----
 function seedToken(token: Partial<IAOTokenDBEntry> & { id: string; slug: string }) {
@@ -123,14 +123,14 @@ function seedEarning(entry: Partial<TokenEarningEntry> & { tokenAddress: string;
 describe('Earnings & Claim Endpoints', () => {
   let earningsService: EarningsService;
   let merkleTreeService: MerkleTreeService;
-  let dynamoDBService: DynamoDBService;
+  let tokenService: TokenService;
 
   beforeEach(() => {
     testData.clear();
     shouldThrowError = false;
     earningsService = new EarningsService();
     merkleTreeService = new MerkleTreeService();
-    dynamoDBService = new DynamoDBService('us-west-1', 'iao-tokens');
+    tokenService = new TokenService();
   });
 
   afterEach(() => {
@@ -161,7 +161,7 @@ describe('Earnings & Claim Endpoints', () => {
       });
 
       // Simulate endpoint logic: look up token by slug, then get earning
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       expect(tokenEntry).not.toBeNull();
 
       const earning = await earningsService.getEarning(tokenEntry!.id, '0xuser1');
@@ -179,7 +179,7 @@ describe('Earnings & Claim Endpoints', () => {
     it('should return zeroed fields when user has no earnings', async () => {
       seedToken({ id: '0xtoken', slug: 'testserver' });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       expect(tokenEntry).not.toBeNull();
 
       const earning = await earningsService.getEarning(tokenEntry!.id, '0xunknown');
@@ -207,7 +207,7 @@ describe('Earnings & Claim Endpoints', () => {
         virtualTokensDistributed: '700000000000000000000000000', // > 625M threshold
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const virtualDistributed = BigInt(tokenEntry!.virtualTokensDistributed || '0');
       const graduationThreshold = BigInt('625000000000000000000000000');
       const rawProgress = Number((virtualDistributed * 10000n) / graduationThreshold) / 100;
@@ -225,7 +225,7 @@ describe('Earnings & Claim Endpoints', () => {
         virtualTokensDistributed: '625000000000000000000000000',
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const isGraduated = tokenEntry?.graduated === true;
 
       expect(isGraduated).toBe(true);
@@ -247,7 +247,7 @@ describe('Earnings & Claim Endpoints', () => {
     });
 
     it('should return 404-equivalent when server slug not found', async () => {
-      const tokenEntry = await dynamoDBService.getItemBySlug('nonexistent');
+      const tokenEntry = await tokenService.getItemBySlug('nonexistent');
       expect(tokenEntry).toBeNull();
       // Endpoint would return 404
     });
@@ -255,7 +255,7 @@ describe('Earnings & Claim Endpoints', () => {
     it('should handle null earning gracefully (no crash)', async () => {
       seedToken({ id: '0xtoken', slug: 'testserver' });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const earning = await earningsService.getEarning(tokenEntry!.id, '0xnoone');
 
       // Simulating the endpoint's null-safe property access
@@ -292,7 +292,7 @@ describe('Earnings & Claim Endpoints', () => {
         callCount: '3',
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const earnings = await earningsService.getEarningsByToken(tokenEntry!.id);
 
       expect(earnings).toHaveLength(2);
@@ -310,7 +310,7 @@ describe('Earnings & Claim Endpoints', () => {
     it('should return empty users array when no earnings exist', async () => {
       seedToken({ id: '0xtoken', slug: 'testserver' });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const earnings = await earningsService.getEarningsByToken(tokenEntry!.id);
 
       expect(earnings).toEqual([]);
@@ -323,7 +323,7 @@ describe('Earnings & Claim Endpoints', () => {
         virtualTokensDistributed: '100000000000000000000000000',
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const totalVirtualDistributed = tokenEntry?.virtualTokensDistributed || '0';
       const graduationThreshold = '625000000000000000000000000';
 
@@ -332,7 +332,7 @@ describe('Earnings & Claim Endpoints', () => {
     });
 
     it('should return 404-equivalent when server slug not found', async () => {
-      const tokenEntry = await dynamoDBService.getItemBySlug('ghost');
+      const tokenEntry = await tokenService.getItemBySlug('ghost');
       expect(tokenEntry).toBeNull();
     });
   });
@@ -380,7 +380,7 @@ describe('Earnings & Claim Endpoints', () => {
       });
 
       // Simulate endpoint
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       expect(tokenEntry?.graduated).toBe(true);
 
       const proofData = await merkleTreeService.generateProof(tokenEntry!.id, addr1);
@@ -415,7 +415,7 @@ describe('Earnings & Claim Endpoints', () => {
         graduated: false,
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const isGraduated = tokenEntry?.graduated === true;
 
       expect(isGraduated).toBe(false);
@@ -423,7 +423,7 @@ describe('Earnings & Claim Endpoints', () => {
     });
 
     it('should return 404-equivalent when server slug not found', async () => {
-      const tokenEntry = await dynamoDBService.getItemBySlug('noexist');
+      const tokenEntry = await tokenService.getItemBySlug('noexist');
       expect(tokenEntry).toBeNull();
     });
 
@@ -443,7 +443,7 @@ describe('Earnings & Claim Endpoints', () => {
         merkleRoot: '0xRootHash123',
       });
 
-      const tokenEntry = await dynamoDBService.getItemBySlug('testserver');
+      const tokenEntry = await tokenService.getItemBySlug('testserver');
       const merkleRoot = tokenEntry?.merkleRoot || '';
 
       expect(merkleRoot).toBe('0xRootHash123');
@@ -479,7 +479,7 @@ describe('Earnings & Claim Endpoints', () => {
     });
 
     it('should return 404-equivalent when server slug not found', async () => {
-      const tokenEntry = await dynamoDBService.getItemBySlug('nonexistent');
+      const tokenEntry = await tokenService.getItemBySlug('nonexistent');
       expect(tokenEntry).toBeNull();
     });
   });

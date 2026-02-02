@@ -651,10 +651,10 @@ describe('Agent systemInstructions Update', () => {
 // ============================================
 // 5. addApiToToken with parameters and responseFormat
 // ============================================
-import { DynamoDBService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
+import { TokenService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
 
 describe('addApiToToken with parameters and responseFormat', () => {
-  let tokenService: DynamoDBService;
+  let tokenService: TokenService;
 
   const sampleToken: IAOTokenDBEntry = {
     id: '0x1234567890abcdef1234567890abcdef12345678',
@@ -675,7 +675,7 @@ describe('addApiToToken with parameters and responseFormat', () => {
   beforeEach(() => {
     agentTestData.clear();
     agentShouldThrowError = false;
-    tokenService = new DynamoDBService('us-west-1', 'apix-iao-tokens');
+    tokenService = new TokenService();
   });
 
   afterEach(() => {

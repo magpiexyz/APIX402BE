@@ -58,6 +58,13 @@ export interface IAOTokenDBEntry {
   apis: ApiEntry[];              // Array of registered APIs (each with own fee)
   createdAt: string;             // ISO timestamp
   updatedAt: string;             // ISO timestamp
+  // Merkle claim distribution fields
+  virtualTokensDistributed?: string;  // BigInt — total virtual tokens allocated (DB-tracked)
+  merkleRoot?: string;                // bytes32 hex, set at graduation
+  distributionModel?: string;         // "batch" | "merkle" — controls graduation path
+  paymentTokenPrice?: string;         // Cached from factory (for tokensPerCall calc)
+  paymentTokenDecimals?: number;      // Cached (6 for USDC)
+  graduated?: boolean;                // Whether token has graduated
 }
 
 /**
@@ -72,12 +79,11 @@ function normalizeAddress(address: string): string {
   return address; // Solana addresses - keep original case
 }
 
-class DynamoDBService {
+class TokenService {
   private firestore: Firestore;
   private collectionName: string;
 
-  constructor(_region: string, _tableName: string) {
-    // Region and tableName are ignored - using Firestore
+  constructor() {
     this.firestore = getFirestoreClient();
     this.collectionName = Collections.IAO_TOKENS;
   }
@@ -323,6 +329,207 @@ class DynamoDBService {
     }
     return token.apis.find(api => api.index === index) || null;
   }
+
+  /**
+   * Atomically increment virtualTokensDistributed on a token document using a Firestore transaction.
+   * Caps the increment so virtualTokensDistributed never exceeds the graduation threshold.
+   * Returns the new total, actual tokens credited (may be less than requested), and token metadata.
+   */
+  async incrementVirtualDistributed(
+    tokenAddress: string,
+    tokensEarned: string
+  ): Promise<{ newTotal: string; actualTokensCredited: string; chainId: string; graduated: boolean; totalFeesCollected: string }> {
+    const normalizedId = normalizeAddress(tokenAddress);
+    try {
+      const docRef = this.firestore.collection(this.collectionName).doc(normalizedId);
+
+      const result = await this.firestore.runTransaction(async (txn) => {
+        const doc = await txn.get(docRef);
+        if (!doc.exists) {
+          throw new Error(`Token ${tokenAddress} not found for virtual distribution increment`);
+        }
+        const current = doc.data() as IAOTokenDBEntry;
+        const chainId = current.chainId;
+        const graduated = current.graduated ?? false;
+
+        // If already graduated, no more tokens can be distributed
+        if (graduated) {
+          return {
+            newTotal: current.virtualTokensDistributed || "0",
+            actualTokensCredited: "0",
+            chainId,
+            graduated: true,
+            totalFeesCollected: current.totalFeesCollected || "0",
+          };
+        }
+
+        // Determine graduation threshold based on chain
+        const solanaChains = ['devnet', 'mainnet-beta', 'testnet'];
+        const isSolana = solanaChains.includes(chainId);
+        const threshold = isSolana
+          ? BigInt("625000000000000000")        // 625M with 9 decimals
+          : BigInt("625000000000000000000000000"); // 625M with 18 decimals
+
+        const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
+        const requested = BigInt(tokensEarned);
+
+        // Cap tokens to remaining capacity before graduation threshold
+        const remainingCapacity = threshold - currentVirtual;
+        if (remainingCapacity <= 0n) {
+          // Already at or past threshold — no more tokens to distribute
+          return {
+            newTotal: currentVirtual.toString(),
+            actualTokensCredited: "0",
+            chainId,
+            graduated,
+            totalFeesCollected: current.totalFeesCollected || "0",
+          };
+        }
+
+        const actualTokens = requested < remainingCapacity ? requested : remainingCapacity;
+        const newVirtual = (currentVirtual + actualTokens).toString();
+
+        txn.update(docRef, {
+          virtualTokensDistributed: newVirtual,
+          updatedAt: new Date().toISOString(),
+        });
+
+        return {
+          newTotal: newVirtual,
+          actualTokensCredited: actualTokens.toString(),
+          chainId,
+          graduated,
+          totalFeesCollected: current.totalFeesCollected || "0",
+        };
+      });
+
+      console.log(`✅ Virtual tokens distributed updated: ${result.newTotal} (credited: ${result.actualTokensCredited})`);
+      return result;
+    } catch (err) {
+      console.error(`❌ Failed to increment virtual distributed for ${tokenAddress}:`, err);
+      throw err;
+    }
+  }
+  /**
+   * Atomically increment virtualTokensDistributed AND user earnings in a single Firestore transaction.
+   * Prevents the race condition where graduation reads earnings before a concurrent request finishes writing them.
+   * Caps tokens at the graduation threshold — no overflow possible.
+   */
+  async incrementVirtualDistributedWithEarnings(
+    tokenAddress: string,
+    userAddress: string,
+    tokensEarned: string,
+    feePaid: string
+  ): Promise<{ newTotal: string; actualTokensCredited: string; chainId: string; graduated: boolean; totalFeesCollected: string }> {
+    const normalizedToken = normalizeAddress(tokenAddress);
+    const normalizedUser = userAddress.toLowerCase();
+    const earningsDocId = `${normalizedToken}#${normalizedUser}`;
+
+    try {
+      const tokenDocRef = this.firestore.collection(this.collectionName).doc(normalizedToken);
+      const earningsDocRef = this.firestore.collection(Collections.TOKEN_EARNINGS).doc(earningsDocId);
+
+      const result = await this.firestore.runTransaction(async (txn) => {
+        // Read both documents in the same transaction
+        const [tokenDoc, earningsDoc] = await Promise.all([
+          txn.get(tokenDocRef),
+          txn.get(earningsDocRef),
+        ]);
+
+        if (!tokenDoc.exists) {
+          throw new Error(`Token ${tokenAddress} not found for virtual distribution increment`);
+        }
+        const current = tokenDoc.data() as IAOTokenDBEntry;
+        const chainId = current.chainId;
+        const graduated = current.graduated ?? false;
+
+        // If already graduated, no more tokens can be distributed
+        if (graduated) {
+          return {
+            newTotal: current.virtualTokensDistributed || "0",
+            actualTokensCredited: "0",
+            chainId,
+            graduated: true,
+            totalFeesCollected: current.totalFeesCollected || "0",
+          };
+        }
+
+        // Determine graduation threshold based on chain
+        const solanaChains = ['devnet', 'mainnet-beta', 'testnet'];
+        const isSolana = solanaChains.includes(chainId);
+        const threshold = isSolana
+          ? BigInt("625000000000000000")        // 625M with 9 decimals
+          : BigInt("625000000000000000000000000"); // 625M with 18 decimals
+
+        const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
+        const requested = BigInt(tokensEarned);
+
+        // Cap tokens to remaining capacity before graduation threshold
+        const remainingCapacity = threshold - currentVirtual;
+        if (remainingCapacity <= 0n) {
+          return {
+            newTotal: currentVirtual.toString(),
+            actualTokensCredited: "0",
+            chainId,
+            graduated,
+            totalFeesCollected: current.totalFeesCollected || "0",
+          };
+        }
+
+        const actualTokens = requested < remainingCapacity ? requested : remainingCapacity;
+        const newVirtual = (currentVirtual + actualTokens).toString();
+        const now = new Date().toISOString();
+
+        // Write 1: Update virtual distribution on token doc
+        txn.update(tokenDocRef, {
+          virtualTokensDistributed: newVirtual,
+          updatedAt: now,
+        });
+
+        // Write 2: Create or update earnings doc in the SAME transaction
+        if (!earningsDoc.exists) {
+          txn.set(earningsDocRef, {
+            id: earningsDocId,
+            tokenAddress: normalizedToken,
+            userAddress: normalizedUser,
+            totalTokensEarned: actualTokens.toString(),
+            totalFeesPaid: feePaid,
+            callCount: "1",
+            lastEarnedAt: now,
+            claimed: false,
+            createdAt: now,
+            updatedAt: now,
+          });
+        } else {
+          const existing = earningsDoc.data()!;
+          const newTotalTokens = (BigInt(existing.totalTokensEarned) + actualTokens).toString();
+          const newTotalFees = (BigInt(existing.totalFeesPaid) + BigInt(feePaid)).toString();
+          const newCallCount = (BigInt(existing.callCount) + 1n).toString();
+          txn.update(earningsDocRef, {
+            totalTokensEarned: newTotalTokens,
+            totalFeesPaid: newTotalFees,
+            callCount: newCallCount,
+            lastEarnedAt: now,
+            updatedAt: now,
+          });
+        }
+
+        return {
+          newTotal: newVirtual,
+          actualTokensCredited: actualTokens.toString(),
+          chainId,
+          graduated,
+          totalFeesCollected: current.totalFeesCollected || "0",
+        };
+      });
+
+      console.log(`✅ Virtual + earnings updated atomically: ${result.newTotal} (credited: ${result.actualTokensCredited} to ${normalizedUser})`);
+      return result;
+    } catch (err) {
+      console.error(`❌ Failed atomic increment for ${tokenAddress}/${userAddress}:`, err);
+      throw err;
+    }
+  }
 }
 
-export { DynamoDBService };
+export { TokenService };

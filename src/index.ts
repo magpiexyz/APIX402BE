@@ -12,9 +12,11 @@ import fs from 'fs'
 import { decompress as decompressZstd } from 'fzstd'
 import { Connection, Transaction } from '@solana/web3.js'
 import bs58 from 'bs58'
-import { DynamoDBService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
+import { TokenService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
 import { UserRequestService } from './services/firestoreUserRequestService.js'
 import { MetricsService } from './services/firestoreMetricsService.js'
+import { EarningsService } from './services/firestoreEarningsService.js'
+import { MerkleTreeService } from './services/firestoreMerkleTreeService.js'
 import { AgentService, CreateAgentParams } from './services/firestoreAgentService.js'
 import { ChatSessionService } from './services/firestoreChatSessionService.js'
 import { LLMService } from './services/llmService.js'
@@ -25,6 +27,9 @@ import { generateBuilderJWT } from './utils/jwtAuth.js'
 import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
 import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 import { v2 as cloudinary } from 'cloudinary'
+import { dispatchGraduationTask } from './services/graduationDispatcher.js'
+import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
+import { notifyLambdaForGraduation } from './services/graduationNotifier.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -170,26 +175,22 @@ if (!BUILDER_SECRET_PHRASE) {
   console.log("   This should be a shared secret phrase between you and the builder")
 }
 
-// DynamoDB Service initialization
-const DYNAMODB_REGION = process.env.DYNAMODB_REGION || "us-west-1"
-const DYNAMODB_TABLE_NAME = "apix-iao-tokens"
+// Service initialization
+const LEGACY_REGION = process.env.LEGACY_REGION || "us-west-1"
 const USER_REQUEST_TABLE_NAME = "apix-iao-user-requests"
 const REQUEST_QUEUE_TABLE_NAME = "apix-iao-request-queue"
-let dynamoDBService: DynamoDBService | null = null
+let tokenService: TokenService | null = null
 let userRequestService: UserRequestService | null = null
 
 try {
-  dynamoDBService = new DynamoDBService(DYNAMODB_REGION, DYNAMODB_TABLE_NAME)
-  const endpoint = process.env.DYNAMODB_ENDPOINT || "AWS (default)"
-  console.log(`✅ DynamoDB service initialized (Region: ${DYNAMODB_REGION}, Table: ${DYNAMODB_TABLE_NAME}, Endpoint: ${endpoint})`)
-  } catch (error) {
-  console.error("⚠️  Failed to initialize DynamoDB service:", error)
-  console.log("   Set DYNAMODB_REGION and DYNAMODB_TABLE_NAME environment variables if needed")
-  console.log("   For local DynamoDB, set DYNAMODB_ENDPOINT=http://localhost:8000")
+  tokenService = new TokenService()
+  console.log(`✅ Token service initialized (Firestore)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Token service:", error)
 }
 
 try {
-  userRequestService = new UserRequestService(DYNAMODB_REGION, USER_REQUEST_TABLE_NAME, REQUEST_QUEUE_TABLE_NAME)
+  userRequestService = new UserRequestService(LEGACY_REGION, USER_REQUEST_TABLE_NAME, REQUEST_QUEUE_TABLE_NAME)
   console.log(`✅ UserRequest service initialized (UserRequest Table: ${USER_REQUEST_TABLE_NAME}, RequestQueue Table: ${REQUEST_QUEUE_TABLE_NAME})`)
   } catch (error) {
   console.error("⚠️  Failed to initialize UserRequest service:", error)
@@ -200,7 +201,7 @@ try {
 const METRICS_TABLE_NAME = "apix-iao-metrics"
 let metricsService: MetricsService | null = null
 try {
-  metricsService = new MetricsService(DYNAMODB_REGION, METRICS_TABLE_NAME)
+  metricsService = new MetricsService(LEGACY_REGION, METRICS_TABLE_NAME)
   console.log(`✅ Metrics service initialized (Table: ${METRICS_TABLE_NAME})`)
 } catch (error) {
   console.error("⚠️  Failed to initialize Metrics service:", error)
@@ -218,23 +219,23 @@ let agentService: AgentService | null = null
 let chatSessionService: ChatSessionService | null = null
 
 try {
-  agentService = new AgentService(DYNAMODB_REGION, AGENTS_TABLE_NAME)
+  agentService = new AgentService(LEGACY_REGION, AGENTS_TABLE_NAME)
   console.log(`✅ Agent service initialized (Table: ${AGENTS_TABLE_NAME})`)
 } catch (error) {
   console.error("⚠️  Failed to initialize Agent service:", error)
-  console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
 }
 
 try {
   chatSessionService = new ChatSessionService(
-    DYNAMODB_REGION,
+    LEGACY_REGION,
     CHAT_SESSIONS_TABLE_NAME,
     CHAT_MESSAGES_TABLE_NAME
   )
   console.log(`✅ Chat session service initialized (Tables: ${CHAT_SESSIONS_TABLE_NAME}, ${CHAT_MESSAGES_TABLE_NAME})`)
 } catch (error) {
   console.error("⚠️  Failed to initialize Chat session service:", error)
-  console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
 }
 
 // LLM Service initialization
@@ -274,21 +275,38 @@ try {
 let agentPaymentService: AgentPaymentService | null = null
 try {
   agentPaymentService = new AgentPaymentService(
-    DYNAMODB_REGION,
+    LEGACY_REGION,
     AGENT_PAYMENTS_TABLE_NAME,
     process.env.THIRDWEB_SERVER_WALLET_ADDRESS
   )
   console.log(`✅ Agent payment service initialized (Table: ${AGENT_PAYMENTS_TABLE_NAME})`)
 } catch (error) {
   console.error("⚠️  Failed to initialize Agent payment service:", error)
-  console.log("   Run CREATE_AGENT_TABLES.sh to create DynamoDB tables")
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
+}
+
+// Earnings Service initialization (Merkle claim distribution)
+let earningsService: EarningsService | null = null
+let merkleTreeService: MerkleTreeService | null = null
+try {
+  earningsService = new EarningsService()
+  console.log(`✅ Earnings service initialized (Collection: token-earnings)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Earnings service:", error)
+}
+
+try {
+  merkleTreeService = new MerkleTreeService()
+  console.log(`✅ MerkleTree service initialized (Collection: merkle-trees)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize MerkleTree service:", error)
 }
 
 // Chain Config Service initialization
 const CHAIN_CONFIG_TABLE_NAME = process.env.CHAIN_CONFIG_TABLE_NAME || "apix-chain-configs"
 let chainConfigService: ChainConfigService | null = null
 try {
-  chainConfigService = new ChainConfigService(DYNAMODB_REGION, CHAIN_CONFIG_TABLE_NAME)
+  chainConfigService = new ChainConfigService(LEGACY_REGION, CHAIN_CONFIG_TABLE_NAME)
   console.log(`✅ Chain config service initialized (Table: ${CHAIN_CONFIG_TABLE_NAME})`)
   // Seed default configs on startup
   chainConfigService.seedDefaultConfigs().catch(err => {
@@ -348,20 +366,20 @@ interface IAOTokenEntry {
 }
 
 /**
- * Get IAO token entry by token address (id) from DynamoDB
+ * Get IAO token entry by token address (id) from Firestore
  */
 async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | null> {
   const addressLower = tokenAddress.toLowerCase()
 
-  if (!dynamoDBService) {
-    console.error("DynamoDB service not configured")
+  if (!tokenService) {
+    console.error("Firestore service not configured")
     return null
   }
 
   try {
-    const dbEntry = await dynamoDBService.getItem(addressLower)
+    const dbEntry = await tokenService.getItem(addressLower)
     if (dbEntry) {
-      // Convert DynamoDB entry to IAOTokenEntry format
+      // Convert Firestore entry to IAOTokenEntry format
       const tokenEntry: IAOTokenEntry = {
         id: dbEntry.id,
         slug: dbEntry.slug,
@@ -376,24 +394,24 @@ async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | n
         logoUrl: dbEntry.logoUrl,
         apis: dbEntry.apis || [],
       }
-      console.log(`✅ Found IAO token in DynamoDB: ${addressLower} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
+      console.log(`✅ Found IAO token in Firestore: ${addressLower} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
       return tokenEntry
     }
     console.log(`❌ No IAO token entry found for ${addressLower}`)
     return null
   } catch (error) {
-    console.error(`Error querying DynamoDB for ${addressLower}:`, error)
+    console.error(`Error querying Firestore for ${addressLower}:`, error)
     return null
   }
 }
 
 /**
- * Get IAO token entry by server slug from DynamoDB (with caching)
- * Uses DynamoDB-backed cache for fast repeated lookups
+ * Get IAO token entry by server slug from Firestore (with caching)
+ * Uses Firestore-backed cache for fast repeated lookups
  */
 async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry | null> {
-  if (!dynamoDBService) {
-    console.error("DynamoDB service not configured")
+  if (!tokenService) {
+    console.error("Firestore service not configured")
     return null
   }
 
@@ -407,8 +425,8 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
       return cacheResult.data
     }
 
-    // Cache miss or expired - fetch from DynamoDB
-    const dbEntry = await dynamoDBService.getItemBySlug(serverSlug)
+    // Cache miss or expired - fetch from Firestore
+    const dbEntry = await tokenService.getItemBySlug(serverSlug)
     if (dbEntry) {
       const tokenEntry: IAOTokenEntry = {
         id: dbEntry.id,
@@ -434,7 +452,7 @@ async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry
     console.log(`❌ No IAO token entry found for slug: ${serverSlug}`)
     return null
   } catch (error) {
-    console.error(`Error querying DynamoDB for slug ${serverSlug}:`, error)
+    console.error(`Error querying Firestore for slug ${serverSlug}:`, error)
 
     // If cache had stale data, use it as fallback
     const cacheResult = await getCached<IAOTokenEntry>(cacheKey)
@@ -1046,7 +1064,7 @@ app.post('/api/test-endpoint', async (req, res) => {
  *
  * This endpoint can be called in two modes:
  * 1. VALIDATION MODE (tokenAddress missing): Validates data BEFORE transaction signing
- * 2. REGISTRATION MODE (tokenAddress present): Stores token in DynamoDB AFTER transaction
+ * 2. REGISTRATION MODE (tokenAddress present): Stores token in Firestore AFTER transaction
  *
  * Request body (validation mode):
  * {
@@ -1122,16 +1140,16 @@ app.post('/api/register', async (req, res) => {
         })
       }
 
-      // Check if DynamoDB is configured
-      if (!dynamoDBService) {
+      // Check if Firestore is configured
+      if (!tokenService) {
         return res.status(503).json({
-          error: "DynamoDB not configured",
-          message: "DynamoDB service is not available"
+          error: "Firestore not configured",
+          message: "Firestore service is not available"
         })
       }
 
       // Check if server slug already exists
-      const existingBySlug = await dynamoDBService.getItemBySlug(finalServerSlug)
+      const existingBySlug = await tokenService.getItemBySlug(finalServerSlug)
       if (existingBySlug) {
         return res.status(409).json({
           error: "Server slug already taken",
@@ -1204,7 +1222,7 @@ app.post('/api/register', async (req, res) => {
 
       // Check if any API URL + method combinations are already registered globally
       // Same URL with different methods (GET vs POST) is allowed
-      const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
+      const duplicateApis = await tokenService.checkApiUrlsDuplicate(apiUrlsWithMethods)
       if (duplicateApis.length > 0) {
         return res.status(409).json({
           error: "Duplicate API URL(s)",
@@ -1288,16 +1306,16 @@ app.post('/api/register', async (req, res) => {
       })
     }
 
-    // Check if DynamoDB is configured
-    if (!dynamoDBService) {
+    // Check if Firestore is configured
+    if (!tokenService) {
       return res.status(503).json({
-        error: "DynamoDB not configured",
-        message: "DynamoDB service is not available. Please configure DYNAMODB_REGION and DYNAMODB_TABLE_NAME"
+        error: "Firestore not configured",
+        message: "Firestore service is not available. Please configure GCP_PROJECT_ID"
       })
     }
 
     // Check if server slug already exists
-    const existingBySlug = await dynamoDBService.getItemBySlug(finalServerSlug)
+    const existingBySlug = await tokenService.getItemBySlug(finalServerSlug)
     if (existingBySlug) {
       return res.status(409).json({
         error: "Server slug already taken",
@@ -1307,7 +1325,7 @@ app.post('/api/register', async (req, res) => {
 
 
     // Check if token address already exists
-    const existingToken = await dynamoDBService.getItem(tokenAddress.toLowerCase())
+    const existingToken = await tokenService.getItem(tokenAddress.toLowerCase())
     if (existingToken) {
       return res.status(409).json({
         error: "Token already registered",
@@ -1324,7 +1342,7 @@ app.post('/api/register', async (req, res) => {
     const apiUrlsWithMethods = apis
       .filter((api: any) => api.apiUrl)
       .map((api: any) => ({ url: api.apiUrl, method: (api.method || 'GET') as 'GET' | 'POST' }))
-    const duplicateApis = await dynamoDBService.checkApiUrlsDuplicate(apiUrlsWithMethods)
+    const duplicateApis = await tokenService.checkApiUrlsDuplicate(apiUrlsWithMethods)
     if (duplicateApis.length > 0) {
       return res.status(409).json({
         error: "Duplicate API URL(s)",
@@ -1451,8 +1469,8 @@ app.post('/api/register', async (req, res) => {
       updatedAt: now,
     }
 
-    // Store in DynamoDB
-    await dynamoDBService.putItem(tokenEntry)
+    // Store in Firestore
+    await tokenService.putItem(tokenEntry)
 
     // Invalidate any stale cache for this slug
     await invalidateCache(CacheKeys.SERVER_BY_SLUG(finalServerSlug))
@@ -1617,16 +1635,16 @@ app.post('/api/add-api', async (req, res) => {
       })
     }
 
-    // Check if DynamoDB is configured
-    if (!dynamoDBService) {
+    // Check if Firestore is configured
+    if (!tokenService) {
       return res.status(503).json({
-        error: "DynamoDB not configured",
-        message: "DynamoDB service is not available"
+        error: "Firestore not configured",
+        message: "Firestore service is not available"
       })
     }
 
     // Get existing token by slug
-    const existingToken = await dynamoDBService.getItemBySlug(serverSlug.toLowerCase())
+    const existingToken = await tokenService.getItemBySlug(serverSlug.toLowerCase())
     if (!existingToken) {
       return res.status(404).json({
         error: "Server not found",
@@ -1652,7 +1670,7 @@ app.post('/api/add-api', async (req, res) => {
 
     // Check if API URL + method combination already exists globally
     // Same URL with different methods (GET vs POST) is allowed
-    const existingApiUrl = await dynamoDBService.apiUrlExists(apiUrl, method as 'GET' | 'POST')
+    const existingApiUrl = await tokenService.apiUrlExists(apiUrl, method as 'GET' | 'POST')
     if (existingApiUrl.exists) {
       return res.status(409).json({
         error: "Duplicate API URL",
@@ -1661,7 +1679,7 @@ app.post('/api/add-api', async (req, res) => {
     }
 
     // Add new API
-    const newApi = await dynamoDBService.addApiToToken(
+    const newApi = await tokenService.addApiToToken(
       existingToken.id,
       apiSlug,
       name,
@@ -1758,13 +1776,13 @@ app.patch('/api/update-api', async (req, res) => {
     // Update the method
     apis[apiIndex].method = method
 
-    // Save to DynamoDB - update the full token entry
+    // Save to Firestore - update the full token entry
     const updatedEntry = {
       ...tokenEntry,
       apis,
       updatedAt: new Date().toISOString()
     }
-    await dynamoDBService.putItem(updatedEntry as any)
+    await tokenService.putItem(updatedEntry as any)
 
     console.log(`✅ Updated API ${serverSlug}/${apiSlug} method to ${method}`)
 
@@ -1790,7 +1808,7 @@ app.patch('/api/update-api', async (req, res) => {
 /**
  * GET /api/server/:slug - Get server metadata by slug (no payment required)
  *
- * Returns server/token information from DynamoDB without processing payment.
+ * Returns server/token information from Firestore without processing payment.
  * Includes all registered APIs under this server (apiUrl hidden for security).
  *
  * @param slug - Server slug (e.g., "magpie")
@@ -1965,10 +1983,10 @@ app.get('/api/chains', async (_req, res) => {
  */
 app.get('/api/servers', async (req, res) => {
   try {
-    if (!dynamoDBService) {
+    if (!tokenService) {
       return res.status(503).json({
-        error: "DynamoDB not configured",
-        message: "DynamoDB service is not available"
+        error: "Firestore not configured",
+        message: "Firestore service is not available"
       })
     }
 
@@ -1982,7 +2000,7 @@ app.get('/api/servers', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     const offset = parseInt(req.query.offset as string) || 0;
 
-    let tokens = await dynamoDBService.scanAllItems();
+    let tokens = await tokenService.scanAllItems();
 
     // Filter by chainId if provided
     if (chainIdFilter) {
@@ -2118,7 +2136,7 @@ app.get('/api/transactions', async (req, res) => {
       });
     }
 
-    if (!dynamoDBService) {
+    if (!tokenService) {
       return res.status(503).json({
         error: "Service not available",
         message: "Server data service is not configured"
@@ -2132,7 +2150,7 @@ app.get('/api/transactions', async (req, res) => {
     const enrichedTransactions = await Promise.all(
       recentTransactions.map(async (tx) => {
         try {
-          const serverData = await dynamoDBService!.getItem(tx.iaoToken);
+          const serverData = await tokenService!.getItem(tx.iaoToken);
           return {
             id: tx.id,
             iaoToken: tx.iaoToken,
@@ -2191,7 +2209,7 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
       })
     }
 
-    // Get server metrics from DynamoDB
+    // Get server metrics from Firestore
     let serverMetrics = null
     if (metricsService) {
       serverMetrics = await metricsService.getServerMetrics(tokenEntry.id)
@@ -2208,47 +2226,83 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
       ? getChainTypeFromId(tokenEntry.chainId)
       : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
 
+    // Check if this token uses Merkle distribution model (DB-tracked progress)
+    const tokenDBEntryForMetrics = tokenService ? await tokenService.getItem(tokenEntry.id) : null
+    const useMerkleMetrics = tokenDBEntryForMetrics?.distributionModel === 'merkle'
+
     // Only fetch EVM contract metrics for EVM tokens
     if (tokenChainType === "solana") {
       console.log(`⏭️  Solana bonding metrics for: ${tokenEntry.id}`)
 
-      // Solana bonding progress will be updated by automation when tokens are minted
-      // For now, return placeholder values - actual progress comes from on-chain Solana program
-      // TODO: Read totalTokensDistributed from Solana IAO program when available
-
       // Graduation threshold in tokens (625M tokens with 18 decimals) - matches EVM
       const tokenGraduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
 
-      // Placeholder: bonding progress will be updated when automation mints tokens
-      // The Solana program tracks totalTokensDistributed on-chain
-      const totalTokensDistributed = BigInt("0") // Will be read from Solana program
-      const bondingProgress = 0 // Will be calculated from on-chain data
+      // Read virtualTokensDistributed from DB for Merkle model, else placeholder
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
 
-      const isGraduated = false
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
 
       // Set payment token info for Solana (used for tokensPerCall calculation)
-      // Match EVM behavior: $0.01 fee → 250 tokens
-      // Formula: tokensPerCall = (fee * paymentTokenPrice) / 10^decimals
-      // 250 * 1e18 = (10,000 * paymentTokenPrice) / 1e6
-      // paymentTokenPrice = 25e21
-      paymentTokenPrice = BigInt("25000000000000000000000") // 25e21 - matches EVM pricing
-      paymentTokenDecimals = 6 // USDC has 6 decimals
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
 
       contractMetrics = {
         tokenAddress: tokenEntry.id,
         graduationThreshold: tokenGraduationThreshold.toString(),
         totalTokensDistributed: totalTokensDistributed.toString(),
-        totalFeesCollected: "0", // Not tracked in DynamoDB - automation handles minting
-        bondingProgress,
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
         isGraduated,
         chainType: "solana",
         paymentTokenPrice: paymentTokenPrice.toString(),
         paymentTokenDecimals,
-        note: "Bonding progress updated when automation mints tokens",
+        distributionModel: tokenDBEntryForMetrics?.distributionModel || "batch",
       }
 
-      console.log(`📊 Solana bonding metrics: awaiting automation to mint tokens`)
+      console.log(`📊 Solana bonding metrics: ${totalTokensDistributed.toString()} tokens distributed`)
+    } else if (useMerkleMetrics) {
+      // Merkle distribution model: read bonding progress from DB instead of on-chain
+      console.log(`📊 Fetching DB-tracked metrics for Merkle token: ${tokenEntry.id}`)
+
+      const tokenGraduationThreshold = BigInt("625000000000000000000000000")
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
+
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
+
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
+
+      let uniswapLink: string | undefined
+      if (isGraduated) {
+        uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
+      }
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: tokenGraduationThreshold.toString(),
+        totalTokensDistributed: totalTokensDistributed.toString(),
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
+        isGraduated,
+        uniswapLink,
+        paymentTokenPrice: paymentTokenPrice.toString(),
+        paymentTokenDecimals,
+        distributionModel: "merkle",
+        merkleRoot: tokenDBEntryForMetrics?.merkleRoot || null,
+      }
     } else try {
+      // Legacy batch distribution model: read from on-chain
       if (!thirdwebClient) {
         console.warn(`⚠️  Thirdweb client not initialized - cannot fetch contract metrics for ${tokenEntry.id}`)
         throw new Error("Thirdweb client not initialized")
@@ -2277,13 +2331,13 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
               address: IAO_FACTORY_ADDRESS,
               abi: IAOTokenFactoryABI,
             })
-            
+
             const paymentTokenInfo = await readContract({
               contract: factoryContract,
               method: "paymentTokenInfo",
               params: [tokenEntry.paymentToken],
             })
-            
+
             // paymentTokenInfo returns: [price, paymentToken, paymentTokenDecimals, graduationThreshold, sqrtPriceX96Token0, sqrtPriceX96Token1]
             if (paymentTokenInfo && Array.isArray(paymentTokenInfo) && paymentTokenInfo.length >= 3) {
               paymentTokenPrice = BigInt(paymentTokenInfo[0].toString())
@@ -2312,20 +2366,12 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         const totalTokensDistributedBigInt = BigInt(totalTokensDistributed.toString())
         const totalFeesCollectedBigInt = BigInt(totalFeesCollected.toString())
 
-        // Fix: Calculate bonding progress percentage with proper precision
-        // Use floating point division instead of BigInt division to preserve precision for small percentages
+        // Calculate bonding progress percentage with proper precision
         let bondingProgress = 0
         if (graduationThresholdBigInt > 0n) {
-          // Convert BigInt to Number for floating point division (within safe integer range)
-          // This allows us to preserve precision for very small percentages
           const totalDistributedNum = Number(totalTokensDistributedBigInt)
           const thresholdNum = Number(graduationThresholdBigInt)
-          
-          // Calculate percentage: (totalTokensDistributed / graduationThreshold) * 100
-          // For very large numbers, this may have some precision loss, but provides correct percentage
           bondingProgress = (totalDistributedNum / thresholdNum) * 100
-          
-          // Ensure valid number (handle NaN/Infinity)
           if (!isFinite(bondingProgress)) {
             bondingProgress = 0
           }
@@ -2336,15 +2382,7 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         // Generate Uniswap link if graduated (Base Sepolia)
         let uniswapLink: string | undefined
         if (isGraduated) {
-          // Uniswap V4 pools are identified by PoolId, not a traditional address
-          // For Base Sepolia, link to token page which should show pool info
-          // TODO: Once Uniswap V4 frontend supports direct pool links, update this
-          // Pool parameters: fee=10000 (1%), tickSpacing=200, hook=lpGuardHook
-          // For now, link to token page which should display pool information
           uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
-          
-          // Alternative: Link to swap page with token pair pre-selected
-          // uniswapLink = `https://app.uniswap.org/swap?chain=base-sepolia&inputCurrency=${tokenEntry.paymentToken}&outputCurrency=${tokenEntry.id}`
         }
 
         contractMetrics = {
@@ -2352,7 +2390,7 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
           graduationThreshold: graduationThresholdBigInt.toString(),
           totalTokensDistributed: totalTokensDistributedBigInt.toString(),
           totalFeesCollected: totalFeesCollectedBigInt.toString(),
-          bondingProgress: Math.min(bondingProgress, 100), // Cap at 100%
+          bondingProgress: Math.min(bondingProgress, 100),
           isGraduated,
           uniswapLink,
           paymentTokenPrice: paymentTokenPrice?.toString() || null,
@@ -2496,7 +2534,7 @@ app.get('/api/metrics/:serverSlug/:apiSlug', async (req, res) => {
  * IAO Proxy Endpoint: /api/:serverSlug/:apiSlug
  * 
  * Flow with Thirdweb facilitator:
- * 1. Query DynamoDB for server by slug
+ * 1. Query Firestore for server by slug
  * 2. Get specific API by slug
  * 3. Use thirdweb's settlePayment() to verify and process payment
  * 4. If payment verified, forward request to builder endpoint
@@ -2525,7 +2563,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
   let requestStartTime = Date.now()
   
   try {
-    // Query DynamoDB for server by slug
+    // Query Firestore for server by slug
     tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
 
     if (!tokenEntry) {
@@ -3155,10 +3193,10 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
             }
 
             // Update subscription count and request queue
-            if (userRequestService && paymentData && dynamoDBService) {
+            if (userRequestService && paymentData && tokenService) {
               const userAddress = extractUserAddressFromPayment(paymentData)
               if (userAddress) {
-                const tokenDBEntry = await dynamoDBService.getItem(tokenEntry.id)
+                const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
                 if (tokenDBEntry) {
                   const currentSubscriptionCount = BigInt(tokenDBEntry.subscriptionCount || "0")
                   const globalRequestNumber = (currentSubscriptionCount + BigInt(1)).toString()
@@ -3178,11 +3216,57 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                         subscriptionCount: newSubscriptionCount,
                         updatedAt: new Date().toISOString(),
                       }
-                      await dynamoDBService.putItem(updatedTokenEntry)
+                      await tokenService.putItem(updatedTokenEntry)
                       await invalidateCache(CacheKeys.SERVER_BY_SLUG(tokenEntry.slug))
                       console.log(`✅ Updated subscriptionCount: ${newSubscriptionCount}`)
                     })()
                   ])
+
+                  // Track virtual token earnings for Merkle claim distribution
+                  if (earningsService && tokenDBEntry.distributionModel === 'merkle') {
+                    try {
+                      const ptp = BigInt(tokenDBEntry.paymentTokenPrice || "25000000000000000000000")
+                      const ptd = tokenDBEntry.paymentTokenDecimals ?? 6
+                      const tokensEarned = (BigInt(api.fee) * ptp) / BigInt(10 ** ptd)
+
+                      // Atomically increment virtual distribution + earnings in a single Firestore transaction.
+                      // Prevents race where graduation reads earnings before a concurrent request writes them.
+                      // Also caps tokens at graduation threshold — no overflow.
+                      const incrementResult = await tokenService.incrementVirtualDistributedWithEarnings(
+                        tokenEntry.id,
+                        userAddress,
+                        tokensEarned.toString(),
+                        api.fee
+                      )
+                      console.log(`✅ Earnings tracked: ${incrementResult.actualTokensCredited} tokens for ${userAddress} (requested: ${tokensEarned.toString()})`)
+
+                      // Check if graduation threshold was crossed
+                      if (!incrementResult.graduated) {
+                        // Graduation thresholds: EVM (18 decimals) vs Solana (9 decimals)
+                        const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+                        const isSolana = solanaChains.includes(incrementResult.chainId)
+                        const threshold = isSolana
+                          ? BigInt("625000000000000000")        // 625M with 9 decimals
+                          : BigInt("625000000000000000000000000") // 625M with 18 decimals
+
+                        if (BigInt(incrementResult.newTotal) >= threshold) {
+                          console.log(`🎓 Graduation threshold crossed for ${tokenEntry.id}! Dispatching graduation task...`)
+                          try {
+                            await dispatchGraduationTask({
+                              tokenAddress: tokenEntry.id,
+                              chainId: incrementResult.chainId,
+                              virtualDistributed: incrementResult.newTotal,
+                              totalFeesCollected: incrementResult.totalFeesCollected,
+                            })
+                          } catch (dispatchErr) {
+                            console.error("⚠️  Graduation dispatch error (non-blocking):", dispatchErr)
+                          }
+                        }
+                      }
+                    } catch (earningsError) {
+                      console.error("⚠️  Earnings tracking error (non-blocking):", earningsError)
+                    }
+                  }
                 }
               }
             }
@@ -3317,6 +3401,187 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     })
   }
 }
+
+/**
+ * EARNINGS & CLAIM ENDPOINTS (Merkle Distribution)
+ * NOTE: Must be defined before catch-all /api/:serverSlug/:apiSlug route
+ */
+
+/**
+ * GET /api/earnings/:serverSlug/:userAddress - Get user earnings for a specific server
+ */
+app.get('/api/earnings/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+
+  try {
+    if (!earningsService || !tokenService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    // Get token DB entry for bonding progress
+    const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
+    const virtualDistributed = BigInt(tokenDBEntry?.virtualTokensDistributed || "0")
+    const graduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
+    const bondingProgress = graduationThreshold > 0n
+      ? Number((virtualDistributed * 10000n) / graduationThreshold) / 100
+      : 0
+    const isGraduated = tokenDBEntry?.graduated === true
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      totalTokensEarned: earning?.totalTokensEarned || "0",
+      totalFeesPaid: earning?.totalFeesPaid || "0",
+      callCount: earning?.callCount || "0",
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+      bondingProgress: Math.min(bondingProgress, 100),
+      isGraduated,
+    })
+  } catch (error: any) {
+    console.error("Error fetching earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/earnings/:serverSlug - Get all earnings for a server
+ */
+app.get('/api/earnings/:serverSlug', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+
+  try {
+    if (!earningsService || !tokenService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenEntry.id)
+    const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
+    const totalVirtualDistributed = tokenDBEntry?.virtualTokensDistributed || "0"
+    const graduationThreshold = "625000000000000000000000000"
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      users: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+        totalFeesPaid: e.totalFeesPaid,
+        callCount: e.callCount,
+        claimed: e.claimed,
+      })),
+      totalVirtualDistributed,
+      graduationThreshold,
+    })
+  } catch (error: any) {
+    console.error("Error fetching all earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/claim/:serverSlug/:userAddress - Get Merkle proof for claiming tokens (post-graduation)
+ */
+app.get('/api/claim/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+
+  try {
+    if (!merkleTreeService || !earningsService) {
+      return res.status(503).json({ error: "Merkle tree service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    // Check if token has graduated
+    const tokenDBEntry = tokenService ? await tokenService.getItem(tokenEntry.id) : null
+    if (!tokenDBEntry?.graduated) {
+      return res.status(400).json({
+        error: "Token not graduated",
+        message: "Merkle claims are only available after graduation. Bonding curve is still active.",
+      })
+    }
+
+    // Get Merkle proof
+    const proofData = await merkleTreeService.generateProof(tokenEntry.id, userAddress)
+    if (!proofData) {
+      return res.status(404).json({
+        error: "No claim found",
+        message: `No token earnings found for ${userAddress} on ${serverSlug}`,
+      })
+    }
+
+    // Check if already claimed
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      amount: proofData.amount,
+      proof: proofData.proof,
+      merkleRoot: tokenDBEntry.merkleRoot || "",
+      index: proofData.index,
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+    })
+  } catch (error: any) {
+    console.error("Error fetching claim data:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * POST /api/claim/:serverSlug/:userAddress/confirm - Confirm a claim transaction
+ */
+app.post('/api/claim/:serverSlug/:userAddress/confirm', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = req.params.userAddress.toLowerCase()
+  const { txHash } = req.body
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    if (!txHash) {
+      return res.status(400).json({ error: "Missing txHash in request body" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found" })
+    }
+
+    await earningsService.markAsClaimed(tokenEntry.id, userAddress, txHash)
+
+    return res.status(200).json({
+      success: true,
+      message: "Claim confirmed",
+      txHash,
+    })
+  } catch (error: any) {
+    console.error("Error confirming claim:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
 
 /**
  * AGENT ENDPOINTS
@@ -4319,6 +4584,195 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
 })
 
 /**
+ * INTERNAL GRADUATION ENDPOINT
+ * Called by Cloud Tasks to build Merkle tree and trigger Lambda for on-chain graduation.
+ * Auth: X-Graduation-Secret header must match GRADUATION_INTERNAL_SECRET env var.
+ */
+app.post('/internal/graduate/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  console.log(`🎓 Graduation task received for ${tokenAddress}`)
+
+  try {
+    if (!tokenService || !earningsService || !merkleTreeService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    // Short-circuit if already graduated
+    const token = await tokenService.getItem(tokenAddress)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+    if (token.graduated) {
+      console.log(`✅ Token ${tokenAddress} already graduated, skipping`)
+      return res.status(200).json({ status: 'already_graduated' })
+    }
+
+    // Acquire graduation lock (Layer 3)
+    const lockAcquired = await acquireGraduationLock(tokenAddress)
+    if (!lockAcquired) {
+      return res.status(409).json({ error: 'Graduation already in progress' })
+    }
+
+    try {
+      // Fetch all earnings for this token
+      const earnings = await earningsService.getEarningsByToken(tokenAddress)
+      if (earnings.length === 0) {
+        console.error(`❌ No earnings found for ${tokenAddress}`)
+        await releaseGraduationLock(tokenAddress)
+        return res.status(400).json({ error: 'No earnings data for tree generation' })
+      }
+
+      // Build Merkle tree from earnings
+      const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree')
+      const leaves: [string, string][] = earnings.map(e => [e.userAddress, e.totalTokensEarned])
+      const tree = StandardMerkleTree.of(leaves, ['address', 'uint256'])
+      const merkleRoot = tree.root
+
+      console.log(`🌳 Merkle tree built for ${tokenAddress}: ${earnings.length} leaves, root: ${merkleRoot}`)
+
+      // Store Merkle tree in Firestore
+      const totalTokens = earnings.reduce(
+        (sum, e) => sum + BigInt(e.totalTokensEarned),
+        BigInt(0)
+      ).toString()
+
+      await merkleTreeService.storeMerkleTree(tokenAddress, {
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+        leaves: earnings.map((e, i) => ({
+          address: e.userAddress,
+          amount: e.totalTokensEarned,
+          index: i,
+        })),
+        treeDump: JSON.stringify(tree.dump()),
+        generatedAt: new Date().toISOString(),
+        chainId: token.chainId,
+      })
+
+      // Set merkleRoot on token entry (graduated stays false until Lambda confirms)
+      const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+        .collection('iao-tokens')
+        .doc(tokenAddress.toLowerCase())
+      await docRef.update({
+        merkleRoot,
+        updatedAt: new Date().toISOString(),
+      })
+
+      // Notify Lambda for on-chain graduation TX
+      await notifyLambdaForGraduation({
+        tokenAddress,
+        chainId: token.chainId,
+        merkleRoot,
+        virtualDistributed: token.virtualTokensDistributed || "0",
+        totalFeesCollected: token.totalFeesCollected || "0",
+      })
+
+      await releaseGraduationLock(tokenAddress)
+
+      console.log(`✅ Graduation processing complete for ${tokenAddress}, Lambda notified`)
+      return res.status(200).json({
+        status: 'graduation_initiated',
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+      })
+    } catch (innerErr) {
+      // Release lock on failure so retries can proceed
+      await releaseGraduationLock(tokenAddress)
+      throw innerErr
+    }
+  } catch (error: any) {
+    console.error(`❌ Graduation processing failed for ${tokenAddress}:`, error)
+    // Return 500 so Cloud Tasks retries
+    return res.status(500).json({ error: 'Graduation processing failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION CALLBACK ENDPOINT
+ * Called by Lambda after on-chain graduation TX succeeds to set graduated=true.
+ */
+app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const { txHash } = req.body || {}
+
+    const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+      .collection('iao-tokens')
+      .doc(tokenAddress.toLowerCase())
+
+    await docRef.update({
+      graduated: true,
+      updatedAt: new Date().toISOString(),
+    })
+
+    // Update merkle tree with on-chain tx hash if provided (non-fatal if doc doesn't exist)
+    if (txHash && merkleTreeService) {
+      try {
+        await merkleTreeService.setOnChainTxHash(tokenAddress, txHash)
+      } catch (merkleErr: any) {
+        console.warn(`⚠️  Could not update merkle tree tx hash for ${tokenAddress}:`, merkleErr.message)
+      }
+    }
+
+    console.log(`✅ Graduation confirmed for ${tokenAddress} (tx: ${txHash || 'unknown'})`)
+    return res.status(200).json({ status: 'confirmed' })
+  } catch (error: any) {
+    console.error(`❌ Graduation confirmation failed for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Confirmation failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION EARNINGS ENDPOINT
+ * Called by Solana Lambda to fetch earnings breakdown for batch_mint.
+ */
+app.get('/internal/graduation-earnings/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: 'Earnings service not initialized' })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenAddress)
+    return res.status(200).json({
+      earnings: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+      })),
+    })
+  } catch (error: any) {
+    console.error(`❌ Failed to fetch graduation earnings for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Failed to fetch earnings', message: error.message })
+  }
+})
+
+/**
  * API PROXY ROUTES
  * IMPORTANT: These wildcard routes MUST be defined AFTER all specific /api/* routes
  * Otherwise they will catch requests meant for /api/chat/*, /api/agents/*, etc.
@@ -4360,7 +4814,7 @@ if (!isVercelServerless) {
     console.log(`   GET /api/:serverSlug/:apiSlug   - Proxy to specific API (e.g., /api/magpie/pool-snapshot)`)
     console.log(`\n⚙️  Configuration:`)
     console.log(`   - Set THIRDWEB_SECRET_KEY and THIRDWEB_SERVER_WALLET_ADDRESS for payment processing`)
-    console.log(`   - Set DYNAMODB_REGION and DYNAMODB_TABLE_NAME for IAO token storage`)
+    console.log(`   - Set GCP_PROJECT_ID for IAO token storage (Firestore)`)
     console.log(`   - Set BUILDER_SECRET_PHRASE for JWT authentication with builder endpoints`)
   })
 }

@@ -1,0 +1,18 @@
+{
+  "name": "graduation-evm-lambda",
+  "version": "1.0.0",
+  "description": "Lambda to execute EVM on-chain graduation via TokenDistributor.graduateTokenWithMerkle",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "deploy": "npm run build && zip -r function.zip dist/ node_modules/ package.json"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}

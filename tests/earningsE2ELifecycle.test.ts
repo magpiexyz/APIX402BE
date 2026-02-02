@@ -25,32 +25,34 @@ vi.mock('../src/db/firestoreClient.js', () => {
     })),
   });
 
+  const createDocRef = (collectionName: string, docId: string) => {
+    const key = `${collectionName}/${docId}`;
+    return {
+      _testKey: key,
+      get: vi.fn().mockImplementation(async () => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        const data = testData.get(key);
+        return { exists: data !== undefined, data: () => data };
+      }),
+      set: vi.fn().mockImplementation(async (data: any) => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        testData.set(key, data);
+      }),
+      update: vi.fn().mockImplementation(async (updates: any) => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        const existing = testData.get(key) || {};
+        testData.set(key, { ...existing, ...updates });
+      }),
+      delete: vi.fn().mockImplementation(async () => {
+        if (shouldThrowError) throw new Error('Firestore error');
+        testData.delete(key);
+      }),
+    };
+  };
+
   const mockFirestore = {
     collection: vi.fn().mockImplementation((collectionName: string) => ({
-      doc: vi.fn().mockImplementation((docId: string) => {
-        const key = `${collectionName}/${docId}`;
-        return {
-          _testKey: key,
-          get: vi.fn().mockImplementation(async () => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            const data = testData.get(key);
-            return { exists: data !== undefined, data: () => data };
-          }),
-          set: vi.fn().mockImplementation(async (data: any) => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            testData.set(key, data);
-          }),
-          update: vi.fn().mockImplementation(async (updates: any) => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            const existing = testData.get(key) || {};
-            testData.set(key, { ...existing, ...updates });
-          }),
-          delete: vi.fn().mockImplementation(async () => {
-            if (shouldThrowError) throw new Error('Firestore error');
-            testData.delete(key);
-          }),
-        };
-      }),
+      doc: vi.fn().mockImplementation((docId: string) => createDocRef(collectionName, docId)),
       where: vi.fn().mockImplementation((field: string, op: string, value: any) => ({
         limit: vi.fn().mockReturnThis(),
         get: vi.fn().mockImplementation(async () => {
@@ -75,6 +77,27 @@ vi.mock('../src/db/firestoreClient.js', () => {
         return createMockSnapshot(matches);
       }),
     })),
+    runTransaction: vi.fn().mockImplementation(async (callback: any) => {
+      // Simulate a Firestore transaction by providing a txn object
+      // that reads/writes directly to testData (same as the doc ref methods)
+      const txn = {
+        get: vi.fn().mockImplementation(async (docRef: any) => {
+          const key = docRef._testKey;
+          const data = testData.get(key);
+          return { exists: data !== undefined, data: () => data };
+        }),
+        update: vi.fn().mockImplementation((docRef: any, updates: any) => {
+          const key = docRef._testKey;
+          const existing = testData.get(key) || {};
+          testData.set(key, { ...existing, ...updates });
+        }),
+        set: vi.fn().mockImplementation((docRef: any, data: any) => {
+          const key = docRef._testKey;
+          testData.set(key, data);
+        }),
+      };
+      return callback(txn);
+    }),
   };
 
   return {
@@ -90,7 +113,7 @@ vi.mock('../src/db/firestoreClient.js', () => {
 
 import { EarningsService } from '../src/services/firestoreEarningsService.js';
 import { MerkleTreeService } from '../src/services/firestoreMerkleTreeService.js';
-import { DynamoDBService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
+import { TokenService, type IAOTokenDBEntry } from '../src/services/firestoreTokenService.js';
 
 // ---- Constants matching production values ----
 const GRADUATION_THRESHOLD = BigInt('625000000000000000000000000'); // 625M with 18 decimals
@@ -135,7 +158,7 @@ async function graduateToken(
   tokenAddress: string,
   earningsService: EarningsService,
   merkleTreeService: MerkleTreeService,
-  dynamoDBService: DynamoDBService
+  tokenService: TokenService
 ): Promise<string> {
   // 1. Fetch all earnings (matches automation Lambda logic)
   const earnings = await earningsService.getEarningsByToken(tokenAddress);
@@ -186,7 +209,7 @@ async function graduateToken(
 describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
   let earningsService: EarningsService;
   let merkleTreeService: MerkleTreeService;
-  let dynamoDBService: DynamoDBService;
+  let tokenService: TokenService;
 
   beforeEach(() => {
     testData.clear();
@@ -194,7 +217,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
 
     earningsService = new EarningsService();
     merkleTreeService = new MerkleTreeService();
-    dynamoDBService = new DynamoDBService('us-west-1', 'iao-tokens');
+    tokenService = new TokenService();
 
     // Seed the IAO token (Merkle distribution model)
     const tokenEntry: IAOTokenDBEntry = {
@@ -246,13 +269,13 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       // User A makes 3 calls
       for (let i = 0; i < 3; i++) {
         await earningsService.incrementEarnings(TOKEN_ADDRESS, USER_A, tokensPerCall, fee);
-        await dynamoDBService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
+        await tokenService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
       }
 
       // User B makes 2 calls
       for (let i = 0; i < 2; i++) {
         await earningsService.incrementEarnings(TOKEN_ADDRESS, USER_B, tokensPerCall, fee);
-        await dynamoDBService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
+        await tokenService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
       }
 
       // Verify user earnings
@@ -268,7 +291,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       expect(earningB!.callCount).toBe('2');
 
       // Verify virtual distribution on the token
-      const token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      const token = await tokenService.getItem(TOKEN_ADDRESS);
       const expectedVirtual = BigInt(tokensPerCall) * 5n; // 3 + 2 calls
       expect(token!.virtualTokensDistributed).toBe(expectedVirtual.toString());
 
@@ -287,7 +310,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       for (const [user, count] of Object.entries(callCounts)) {
         for (let i = 0; i < count; i++) {
           await earningsService.incrementEarnings(TOKEN_ADDRESS, user, tokensPerCall, fee);
-          await dynamoDBService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
+          await tokenService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
         }
       }
 
@@ -302,7 +325,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       }
 
       // Verify aggregate virtual distribution = sum of all
-      const token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      const token = await tokenService.getItem(TOKEN_ADDRESS);
       const totalCalls = 10 + 7 + 3;
       expect(token!.virtualTokensDistributed).toBe((BigInt(tokensPerCall) * BigInt(totalCalls)).toString());
     });
@@ -323,7 +346,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         virtualTokensDistributed: halfThreshold,
       });
 
-      const token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      const token = await tokenService.getItem(TOKEN_ADDRESS);
       expect(getBondingProgress(token!.virtualTokensDistributed)).toBe(50);
       expect(token!.graduated).toBe(false);
     });
@@ -335,7 +358,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         virtualTokensDistributed: GRADUATION_THRESHOLD.toString(),
       });
 
-      const token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      const token = await tokenService.getItem(TOKEN_ADDRESS);
       const progress = getBondingProgress(token!.virtualTokensDistributed);
       expect(progress).toBe(100);
 
@@ -375,7 +398,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         TOKEN_ADDRESS,
         earningsService,
         merkleTreeService,
-        dynamoDBService
+        tokenService
       );
 
       return { callCounts, tokensPerCall, merkleRoot };
@@ -392,7 +415,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       expect(tree!.leaves).toHaveLength(3);
 
       // Verify token is marked graduated
-      const token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      const token = await tokenService.getItem(TOKEN_ADDRESS);
       expect(token!.graduated).toBe(true);
       expect(token!.merkleRoot).toBe(merkleRoot);
     });
@@ -449,7 +472,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         TOKEN_ADDRESS,
         earningsService,
         merkleTreeService,
-        dynamoDBService
+        tokenService
       );
     });
 
@@ -517,7 +540,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         virtualTokensDistributed: '1000',
       });
 
-      const tokenDBEntry = await dynamoDBService.getItem(ungradToken);
+      const tokenDBEntry = await tokenService.getItem(ungradToken);
       expect(tokenDBEntry!.graduated).toBeFalsy();
       // Endpoint would return 400: "Token not graduated"
     });
@@ -546,7 +569,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         TOKEN_ADDRESS,
         earningsService,
         merkleTreeService,
-        dynamoDBService
+        tokenService
       );
     });
 
@@ -651,7 +674,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       for (const [user, count] of Object.entries(callCounts)) {
         for (let i = 0; i < count; i++) {
           await earningsService.incrementEarnings(TOKEN_ADDRESS, user, tokensPerCall, fee);
-          await dynamoDBService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
+          await tokenService.incrementVirtualDistributed(TOKEN_ADDRESS, tokensPerCall);
         }
       }
 
@@ -660,7 +683,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
       expect(allEarnings).toHaveLength(3);
 
       // --- Step 2: Verify virtual tokens are accumulating (pre-graduation) ---
-      let token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      let token = await tokenService.getItem(TOKEN_ADDRESS);
       const distributedRaw = BigInt(token!.virtualTokensDistributed || '0');
       // 30 calls * tokensPerCall should give a non-zero distributed value
       const totalCalls = 15 + 10 + 5;
@@ -675,7 +698,7 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         ...testData.get(`iao-tokens/${TOKEN_ADDRESS}`),
         virtualTokensDistributed: GRADUATION_THRESHOLD.toString(),
       });
-      token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      token = await tokenService.getItem(TOKEN_ADDRESS);
       expect(getBondingProgress(token!.virtualTokensDistributed)).toBe(100);
 
       // --- Step 4: Graduate & generate Merkle tree ---
@@ -683,10 +706,10 @@ describe('End-to-End: Token Purchase → Graduation → Merkle Claim', () => {
         TOKEN_ADDRESS,
         earningsService,
         merkleTreeService,
-        dynamoDBService
+        tokenService
       );
 
-      token = await dynamoDBService.getItem(TOKEN_ADDRESS);
+      token = await tokenService.getItem(TOKEN_ADDRESS);
       expect(token!.graduated).toBe(true);
       expect(token!.merkleRoot).toBe(merkleRoot);
 
