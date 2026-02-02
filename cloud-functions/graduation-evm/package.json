@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "gcp-build": "tsc",
     "build": "tsc",
     "start": "npx functions-framework --target=graduateEvm --source=dist/"
   },
