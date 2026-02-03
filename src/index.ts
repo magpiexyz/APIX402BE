@@ -1097,8 +1097,11 @@ app.post('/api/register', async (req, res) => {
       paymentToken,
       tags,       // Array of category tags (optional)
       logoUrl,    // Cloudinary URL for server logo (optional)
-      chainId = "84532",  // Chain ID: "84532" (Base Sepolia) or "devnet" (Solana)
+      chainId: rawChainId,  // Chain ID: "84532" (Base Sepolia) or "devnet" (Solana)
     } = req.body
+
+    // Default chainId to "84532" if null or undefined (frontend sends null when "All Chains" selected)
+    const chainId = rawChainId || "84532"
 
     // Determine chain type from chainId
     const chainType = getChainTypeFromId(chainId)

@@ -11,6 +11,14 @@ import { decompress as decompressZstd } from 'fzstd'
 import { Agent } from './firestoreAgentService.js'
 import { ToolDefinition, ToolCall } from './llmService.js'
 
+export interface ApiParameter {
+  name: string
+  type: string
+  required: boolean
+  description?: string
+  example?: string
+}
+
 export interface ApiEntry {
   index: number
   slug: string
@@ -19,6 +27,7 @@ export interface ApiEntry {
   apiUrl?: string
   fee: string
   method?: string  // HTTP method (GET, POST, etc.)
+  parameters?: ApiParameter[]  // API parameters for POST body or GET query
   createdAt: string
 }
 
@@ -101,30 +110,88 @@ export class AgentToolService {
 
         // Build comprehensive description including usage examples
         let description = `${api.name || api.slug} - ${api.description || 'No description available'}`
+        const httpMethod = (api.method || 'GET').toUpperCase()
 
-        // Extract and highlight usage examples from description
-        const usageMatch = api.description?.match(/usage example[s]?:?\s*(.+)/i)
-        let queryDescription = 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
+        // Build input schema based on API parameters and method
+        let inputSchema: any
 
-        if (usageMatch) {
-          // Parse usage examples to help agent understand query params
-          const examples = usageMatch[1]
-          queryDescription = `Query parameters for the API call. Examples from docs: ${examples.slice(0, 200)}`
+        if (api.parameters && api.parameters.length > 0) {
+          // API has defined parameters - use them for the schema
+          const properties: Record<string, any> = {}
+          const required: string[] = []
+
+          for (const param of api.parameters) {
+            properties[param.name] = {
+              type: param.type === 'number' ? 'number' : 'string',
+              description: param.description || param.name
+            }
+            if (param.required) {
+              required.push(param.name)
+            }
+          }
+
+          // For POST APIs, wrap in a 'body' property to make it clear these go in the request body
+          if (httpMethod === 'POST') {
+            inputSchema = {
+              type: 'object',
+              properties: {
+                body: {
+                  type: 'object',
+                  description: 'JSON body for the POST request',
+                  properties,
+                  required
+                }
+              },
+              required: ['body']
+            }
+          } else {
+            // For GET APIs, parameters become query params
+            inputSchema = {
+              type: 'object',
+              properties,
+              required
+            }
+          }
+        } else {
+          // No defined parameters - use generic query string for GET, empty body for POST
+          if (httpMethod === 'POST') {
+            inputSchema = {
+              type: 'object',
+              properties: {
+                body: {
+                  type: 'object',
+                  description: 'JSON body for the POST request'
+                }
+              },
+              required: []
+            }
+          } else {
+            // Extract and highlight usage examples from description
+            const usageMatch = api.description?.match(/usage example[s]?:?\s*(.+)/i)
+            let queryDescription = 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
+
+            if (usageMatch) {
+              const examples = usageMatch[1]
+              queryDescription = `Query parameters for the API call. Examples from docs: ${examples.slice(0, 200)}`
+            }
+
+            inputSchema = {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: queryDescription
+                }
+              },
+              required: []
+            }
+          }
         }
 
         const tool: ToolDefinition = {
           name: toolName,
-          description: `${description}\nFee: ${api.fee} wei`,
-          input_schema: {
-            type: 'object',
-            properties: {
-              query: {
-                type: 'string',
-                description: queryDescription
-              }
-            },
-            required: []
-          }
+          description: `${description}\nHTTP Method: ${httpMethod}\nFee: ${api.fee} wei`,
+          input_schema: inputSchema
         }
 
         tools.push(tool)
@@ -205,29 +272,56 @@ export class AgentToolService {
 
       console.log(`🔧 Executing tool: ${toolCall.name} (${serverSlug}/${apiSlug})`)
 
+      // Get API info to determine HTTP method
+      const apiInfo = await this.getApiInfo(serverSlug, apiSlug)
+      const httpMethod = (apiInfo.method || 'GET').toUpperCase()
+
       // Build the API URL
       const apiUrl = `${this.backendUrl}/api/${serverSlug}/${apiSlug}`
 
-      // Get request parameters from tool input
-      // Support both raw query strings (e.g., "base=USD&date=2024-01-01") and already formatted params
-      let queryParam = ''
-      if (toolCall.input?.query) {
-        const query = toolCall.input.query.trim()
-        // If query already starts with '?', use as-is. Otherwise, add '?'
-        queryParam = query.startsWith('?') ? query : `?${query}`
-      }
+      // Prepare request options based on HTTP method
+      let requestUrl = apiUrl
+      let requestBody: string | undefined
 
-      console.log(`🌐 Calling API: ${apiUrl}${queryParam}`)
+      if (httpMethod === 'POST') {
+        // For POST, use body parameter or direct input as JSON body
+        const bodyData = toolCall.input?.body || toolCall.input || {}
+        requestBody = JSON.stringify(bodyData)
+        console.log(`🌐 Calling API (POST): ${apiUrl}`)
+        console.log(`📦 Request body: ${requestBody}`)
+      } else {
+        // For GET, use query parameter or build from input
+        let queryParam = ''
+        if (toolCall.input?.query) {
+          const query = toolCall.input.query.trim()
+          queryParam = query.startsWith('?') ? query : `?${query}`
+        } else if (toolCall.input && !toolCall.input.body) {
+          // Build query string from input object (excluding 'body' and 'query' keys)
+          const params = new URLSearchParams()
+          for (const [key, value] of Object.entries(toolCall.input)) {
+            if (key !== 'body' && key !== 'query' && value !== undefined) {
+              params.append(key, String(value))
+            }
+          }
+          const paramStr = params.toString()
+          if (paramStr) {
+            queryParam = `?${paramStr}`
+          }
+        }
+        requestUrl = `${apiUrl}${queryParam}`
+        console.log(`🌐 Calling API (GET): ${requestUrl}`)
+      }
 
       // Call the IAO API with timeout
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
-      const response = await fetch(`${apiUrl}${queryParam}`, {
-        method: 'GET',
+      const response = await fetch(requestUrl, {
+        method: httpMethod,
         headers: {
           'Content-Type': 'application/json'
         },
+        body: requestBody,
         signal: controller.signal
       })
 
