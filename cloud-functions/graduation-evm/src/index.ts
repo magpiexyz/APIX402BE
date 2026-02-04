@@ -20,6 +20,7 @@ import { ethers } from 'ethers';
 
 const TOKEN_DISTRIBUTOR_ABI = [
   'function graduateTokenWithMerkle(address token, bytes32 merkleRoot, uint256 virtualDistributed, uint256 actualFeesCollected) external',
+  'function distributeFees(address[] tokens, uint256[] feeAmounts) external',
 ];
 
 interface GraduationEvent {
@@ -73,16 +74,41 @@ export const graduateEvm: HttpFunction = async (req, res) => {
     console.log(`Calling graduateTokenWithMerkle(${tokenAddress}, ${merkleRoot}, ${virtualDistributed}, ${totalFeesCollected})`);
 
     // Execute on-chain graduation
+    // Note: Uniswap V4 pool initialization requires ~20M gas
     const tx = await distributor.graduateTokenWithMerkle(
       tokenAddress,
       merkleRoot,
       BigInt(virtualDistributed),
       BigInt(totalFeesCollected),
+      { gasLimit: 25_000_000 },
     );
 
     console.log(`TX submitted: ${tx.hash}`);
     const receipt = await tx.wait();
     console.log(`TX confirmed in block ${receipt.blockNumber}`);
+
+    // Distribute fees after graduation (split between builder and team)
+    // Note: Use pre-graduation fee amounts since this is the transition moment
+    // The fees collected during bonding curve need to be distributed
+    try {
+      const feesToDistribute = BigInt(totalFeesCollected);
+      if (feesToDistribute > 0n) {
+        console.log(`Distributing fees: ${feesToDistribute.toString()} for token ${tokenAddress}`);
+        const feeTx = await distributor.distributeFees(
+          [tokenAddress],
+          [feesToDistribute],
+          { gasLimit: 500_000 },
+        );
+        console.log(`Fee distribution TX submitted: ${feeTx.hash}`);
+        const feeReceipt = await feeTx.wait();
+        console.log(`Fee distribution confirmed in block ${feeReceipt.blockNumber}`);
+      } else {
+        console.log('No fees to distribute');
+      }
+    } catch (feeErr: any) {
+      // Log but don't fail the graduation - fees can be distributed later
+      console.error(`Fee distribution failed (graduation succeeded): ${feeErr.message}`);
+    }
 
     // Notify backend of successful graduation
     if (backendUrl) {

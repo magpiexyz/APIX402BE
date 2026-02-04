@@ -102,7 +102,7 @@ export class AgentService {
       if (!doc.exists) {
         return null;
       }
-      return doc.data() as Agent;
+      return { id: doc.id, ...doc.data() } as Agent;
     } catch (error) {
       console.error(`❌ Failed to get agent ${id}:`, error);
       throw error;
@@ -115,6 +115,8 @@ export class AgentService {
   async listAgents(filters?: {
     creator?: string;
     isPublic?: boolean;
+    chainType?: string;
+    serverSlugsForChainType?: string[]; // Server slugs that match the chainType filter
   }): Promise<Agent[]> {
     try {
       let query: FirebaseFirestore.Query = getFirestore().collection(this.collectionName);
@@ -128,7 +130,22 @@ export class AgentService {
       }
 
       const snapshot = await query.get();
-      return snapshot.docs.map(doc => doc.data() as Agent);
+      let agents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Agent));
+
+      // Filter by chainType if specified (based on server slugs)
+      if (filters?.chainType && filters?.serverSlugsForChainType) {
+        const validSlugs = new Set(filters.serverSlugsForChainType);
+        agents = agents.filter(agent => {
+          if (!agent.availableTools || agent.availableTools.length === 0) return false;
+          // Check if any of the agent's tools belong to a server with matching chainType
+          return agent.availableTools.some(tool => {
+            const serverSlug = tool.split('/')[0];
+            return validSlugs.has(serverSlug);
+          });
+        });
+      }
+
+      return agents;
     } catch (error) {
       console.error(`❌ Failed to list agents:`, error);
       throw error;
@@ -183,7 +200,7 @@ export class AgentService {
 
       const updatedDoc = await docRef.get();
       console.log(`✅ Agent updated: ${id}`);
-      return updatedDoc.data() as Agent;
+      return { id: updatedDoc.id, ...updatedDoc.data() } as Agent;
     } catch (error) {
       console.error(`❌ Failed to update agent ${id}:`, error);
       throw error;
@@ -233,7 +250,7 @@ export class AgentService {
       });
 
       const updatedDoc = await docRef.get();
-      return updatedDoc.data() as Agent;
+      return { id: updatedDoc.id, ...updatedDoc.data() } as Agent;
     } catch (error: any) {
       console.warn(`⚠️  Failed to increment metric for agent ${id}: ${error.message}`);
       return { id } as Agent;

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APIX GCP Infrastructure Flow</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        h1, h2 {
+            color: #58a6ff;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 10px;
+        }
+        .mermaid {
+            background: #161b22;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .section {
+            margin: 40px 0;
+        }
+        .legend {
+            background: #161b22;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .legend-item {
+            display: inline-block;
+            margin-right: 20px;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .cloud-run { background: #238636; }
+        .cloud-function { background: #8957e5; }
+        .cloud-tasks { background: #f78166; }
+        .firestore { background: #3fb950; }
+        .contract { background: #1f6feb; }
+        .description {
+            background: #21262d;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <h1>APIX GCP Infrastructure & Graduation Flow</h1>
+    <p style="text-align: center; color: #8b949e;">Complete architecture documentation with Mermaid diagrams</p>
+
+    <div class="legend">
+        <strong>Legend:</strong>
+        <span class="legend-item cloud-run">Cloud Run</span>
+        <span class="legend-item cloud-function">Cloud Function</span>
+        <span class="legend-item cloud-tasks">Cloud Tasks</span>
+        <span class="legend-item firestore">Firestore</span>
+        <span class="legend-item contract">Smart Contract</span>
+    </div>
+
+    <div class="section">
+        <h2>1. Infrastructure Overview</h2>
+        <div class="description">
+            APIX uses Google Cloud Platform for backend infrastructure. Cloud Run hosts the main API servers,
+            Cloud Functions execute on-chain graduation transactions, Cloud Tasks provides job queuing with
+            deduplication, and Firestore stores all application data.
+        </div>
+        <div class="mermaid">
+flowchart TB
+    subgraph GCP["Google Cloud Platform"]
+        subgraph CloudRun["Cloud Run Services"]
+            CR1["apix-backend<br/>(legacy)"]
+            CR2["apix-backend-v2<br/>(primary, min-instances=1)"]
+        end
+
+        subgraph Functions["Cloud Functions Gen2"]
+            CF1["graduation-evm<br/>(Node.js 20, 540s timeout)"]
+            CF2["graduation-solana<br/>(Node.js 20, 540s timeout)"]
+        end
+
+        subgraph Tasks["Cloud Tasks"]
+            CQ1["graduation-queue<br/>(deduplication via named tasks)"]
+        end
+
+        subgraph Storage["Firestore Collections"]
+            FS1[("iao-tokens")]
+            FS2[("user-earnings")]
+            FS3[("merkle-trees")]
+            FS4[("api-metrics")]
+            FS5[("graduation-locks")]
+        end
+
+        subgraph GCS["Cloud Storage"]
+            GCS1["apix-iao-docs"]
+        end
+    end
+
+    subgraph Blockchain["Blockchain Networks"]
+        EVM["Base Sepolia<br/>ChainId: 84532"]
+        SOL["Solana Devnet"]
+    end
+
+    subgraph External["External Services"]
+        TW["Thirdweb<br/>Payment Settlement"]
+        Builder["Builder APIs"]
+    end
+
+    CR1 & CR2 --> FS1 & FS2 & FS3 & FS4
+    CR1 & CR2 --> CQ1
+    CQ1 --> CR1 & CR2
+    CR1 & CR2 --> CF1 & CF2
+    CF1 --> EVM
+    CF2 --> SOL
+    CR1 & CR2 --> TW
+    CR1 & CR2 --> Builder
+
+    style CR1 fill:#238636
+    style CR2 fill:#238636
+    style CF1 fill:#8957e5
+    style CF2 fill:#8957e5
+    style CQ1 fill:#f78166
+    style FS1 fill:#3fb950
+    style FS2 fill:#3fb950
+    style FS3 fill:#3fb950
+    style FS4 fill:#3fb950
+    style FS5 fill:#3fb950
+    style EVM fill:#1f6feb
+    style SOL fill:#1f6feb
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>2. Complete Graduation Flow</h2>
+        <div class="description">
+            When a user makes an API call, the backend processes payment, tracks earnings, and checks if the
+            graduation threshold is crossed. If crossed, a Cloud Task is dispatched which triggers the internal
+            graduation handler. The handler builds a Merkle tree and calls the appropriate Cloud Function to
+            execute the on-chain transaction.
+        </div>
+        <div class="mermaid">
+flowchart TD
+    A["fa:fa-user User API Request<br/>(with PAYMENT-SIGNATURE header)"] --> B
+
+    subgraph CloudRun["Cloud Run Backend"]
+        B["Receive Request"]
+        C["Verify Payment Signature"]
+        D["Forward to Builder API"]
+        E["Settle Payment via Thirdweb"]
+        F["Track Earnings in Firestore"]
+        G{"Threshold<br/>Crossed?"}
+        H["Return Response to User"]
+    end
+
+    B --> C --> D --> E --> F --> G
+    G -->|No| H
+
+    subgraph CloudTasks["Cloud Tasks"]
+        I["graduation-queue"]
+        J["Named Task:<br/>graduate-{tokenAddress}"]
+    end
+
+    G -->|Yes| I --> J
+
+    subgraph InternalHandler["Internal Graduation Handler"]
+        K["/internal/graduate/:tokenAddress"]
+        L["Check if Already Graduated"]
+        M["Acquire Graduation Lock"]
+        N["Fetch Earnings from Firestore"]
+        O["Build Merkle Tree<br/>(OpenZeppelin)"]
+        P["Store Tree in Firestore"]
+        Q["Call notifyForGraduation()"]
+    end
+
+    J --> K --> L --> M --> N --> O --> P --> Q
+
+    subgraph CloudFunctions["Cloud Functions"]
+        R{"Route by<br/>ChainId"}
+        S["graduation-evm"]
+        T["graduation-solana"]
+    end
+
+    Q --> R
+    R -->|"Numeric (84532)"| S
+    R -->|"devnet/mainnet-beta"| T
+
+    subgraph Blockchain["Blockchain Execution"]
+        U["TokenDistributor<br/>.graduateTokenWithMerkle()"]
+        V["IAO Program<br/>batch_mint + deploy_liquidity"]
+        W["Liquidity Deployed"]
+    end
+
+    S --> U --> W
+    T --> V --> W
+
+    subgraph Callback["Confirmation Callback"]
+        X["/internal/graduation-confirm"]
+        Y["Set graduated=true"]
+    end
+
+    W --> X --> Y
+
+    style A fill:#58a6ff
+    style B fill:#238636
+    style C fill:#238636
+    style D fill:#238636
+    style E fill:#238636
+    style F fill:#238636
+    style G fill:#238636
+    style H fill:#238636
+    style I fill:#f78166
+    style J fill:#f78166
+    style K fill:#238636
+    style L fill:#238636
+    style M fill:#238636
+    style N fill:#238636
+    style O fill:#238636
+    style P fill:#238636
+    style Q fill:#238636
+    style R fill:#8957e5
+    style S fill:#8957e5
+    style T fill:#8957e5
+    style U fill:#1f6feb
+    style V fill:#1f6feb
+    style W fill:#1f6feb
+    style X fill:#238636
+    style Y fill:#3fb950
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>3. Payment Processing Sequence</h2>
+        <div class="description">
+            Detailed sequence diagram showing how API payments are processed. The backend verifies the payment
+            signature, forwards to the builder API, and only settles the payment if the builder returns success.
+        </div>
+        <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant CloudRun as Cloud Run Backend
+    participant Thirdweb as Thirdweb Facilitator
+    participant Builder as Builder API
+    participant Firestore
+    participant CloudTasks as Cloud Tasks
+
+    User->>CloudRun: POST /api/:serverSlug/:apiSlug<br/>(PAYMENT-SIGNATURE header)
+    CloudRun->>CloudRun: Verify payment authorization
+    CloudRun->>Builder: Forward request with X-IAO-Auth JWT
+    Builder-->>CloudRun: API Response (2xx)
+    CloudRun->>Thirdweb: settlePayment()
+    Thirdweb-->>CloudRun: Payment confirmed
+    CloudRun->>Firestore: Increment earnings<br/>(virtualTokensDistributed, totalFeesCollected)
+    Firestore-->>CloudRun: newTotal, graduated status, chainId
+
+    alt Threshold Crossed AND Not Graduated
+        CloudRun->>CloudTasks: dispatchGraduationTask()<br/>(named task for dedup)
+        Note over CloudTasks: Task name: graduate-{tokenAddress}
+    end
+
+    CloudRun-->>User: Response + X-Payment-Confirmed header
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>4. Cloud Tasks Deduplication</h2>
+        <div class="description">
+            Multiple concurrent requests may cross the graduation threshold simultaneously. Cloud Tasks uses
+            named tasks to ensure graduation is only processed once. Duplicate task creation returns
+            ALREADY_EXISTS which is silently ignored.
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph Requests["Concurrent Requests Cross Threshold"]
+        R1["Request 1"]
+        R2["Request 2"]
+        R3["Request 3"]
+    end
+
+    subgraph Dispatch["dispatchGraduationTask()"]
+        D1["Create Task:<br/>graduate-0x123abc"]
+        D2["Create Task:<br/>graduate-0x123abc"]
+        D3["Create Task:<br/>graduate-0x123abc"]
+    end
+
+    subgraph CloudTasks["Cloud Tasks Queue"]
+        T1["Task Queued<br/>(first request wins)"]
+        E1["ALREADY_EXISTS<br/>(silently ignored)"]
+        E2["ALREADY_EXISTS<br/>(silently ignored)"]
+    end
+
+    subgraph Handler["Internal Handler"]
+        H1["Process Once<br/>/internal/graduate/:token"]
+    end
+
+    R1 --> D1 --> T1 --> H1
+    R2 --> D2 --> E1
+    R3 --> D3 --> E2
+
+    style T1 fill:#238636
+    style E1 fill:#f78166
+    style E2 fill:#f78166
+    style H1 fill:#238636
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>5. EVM Graduation Sequence</h2>
+        <div class="description">
+            For EVM chains (Base Sepolia), the graduation-evm Cloud Function calls TokenDistributor.graduateTokenWithMerkle()
+            which sets the Merkle root on the token contract and deploys liquidity to Uniswap V4.
+        </div>
+        <div class="mermaid">
+sequenceDiagram
+    participant CloudRun as Cloud Run
+    participant GradFunc as graduation-evm<br/>Cloud Function
+    participant Distributor as TokenDistributor<br/>Contract
+    participant Token as IAOToken<br/>Contract
+    participant Uniswap as Uniswap V4
+
+    CloudRun->>GradFunc: POST with X-Graduation-Secret<br/>{action, tokenAddress, merkleRoot,<br/>virtualDistributed, totalFeesCollected}
+
+    GradFunc->>GradFunc: Verify X-Graduation-Secret header
+
+    GradFunc->>Distributor: graduateTokenWithMerkle(<br/>token, merkleRoot,<br/>virtualDistributed, totalFeesCollected)
+
+    Distributor->>Token: Set merkleRoot
+    Distributor->>Token: Set totalTokensDistributed
+    Token->>Token: _deployLiquidity()
+    Token->>Uniswap: Create pool + add liquidity
+    Uniswap-->>Token: Pool created with LpGuardHook
+
+    Token-->>Distributor: Success
+    Distributor-->>GradFunc: TX confirmed (receipt)
+
+    GradFunc->>CloudRun: POST /internal/graduation-confirm/:token<br/>{txHash}
+    CloudRun->>CloudRun: Set graduated=true in Firestore
+
+    GradFunc-->>CloudRun: 200 OK {status: graduated, txHash, blockNumber}
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>6. Solana Graduation Sequence</h2>
+        <div class="description">
+            For Solana, the graduation-solana Cloud Function first fetches all earnings from the backend,
+            then calls batch_mint in chunks of 50 users to mint tokens, and finally calls deploy_liquidity.
+        </div>
+        <div class="mermaid">
+sequenceDiagram
+    participant CloudRun as Cloud Run
+    participant GradFunc as graduation-solana<br/>Cloud Function
+    participant Program as IAO Solana Program
+
+    CloudRun->>GradFunc: POST with X-Graduation-Secret<br/>{action, tokenAddress, chainId}
+
+    GradFunc->>GradFunc: Verify X-Graduation-Secret header
+
+    GradFunc->>CloudRun: GET /internal/graduation-earnings/:token<br/>(with X-Graduation-Secret)
+    CloudRun-->>GradFunc: {earnings: [{userAddress, totalTokensEarned}, ...]}
+
+    Note over GradFunc: Process in chunks of 50
+
+    loop For each chunk of 50 users
+        GradFunc->>Program: batch_mint(recipients[], amounts[], fees[])
+        Note over Program: Create ATAs if needed
+        Program-->>GradFunc: TX signature confirmed
+    end
+
+    GradFunc->>Program: deploy_liquidity()
+    Program-->>GradFunc: Liquidity deployed signature
+
+    GradFunc->>CloudRun: POST /internal/graduation-confirm/:token<br/>{txHash}
+    CloudRun->>CloudRun: Set graduated=true in Firestore
+
+    GradFunc-->>CloudRun: 200 OK {status: graduated, txHash, batchesProcessed}
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>7. Environment Variables</h2>
+        <div class="description">
+            Overview of all environment variables required for each service.
+        </div>
+        <div class="mermaid">
+flowchart TB
+    subgraph CloudRunEnv["Cloud Run Environment Variables"]
+        direction LR
+        E1["GCP_PROJECT_ID"]
+        E2["THIRDWEB_SECRET_KEY"]
+        E3["THIRDWEB_SERVER_WALLET_ADDRESS"]
+        E4["GRADUATION_INTERNAL_SECRET"]
+        E5["GRADUATION_FUNCTION_EVM_URL"]
+        E6["GRADUATION_FUNCTION_SOLANA_URL"]
+        E7["CLOUD_RUN_SERVICE_URL"]
+        E8["GRADUATION_QUEUE_NAME"]
+        E9["TEST_GRADUATION_THRESHOLD<br/>(optional, for testing)"]
+    end
+
+    subgraph FunctionEnvEVM["graduation-evm Environment"]
+        direction LR
+        F1["AUTOMATION_PRIVATE_KEY<br/>(hex)"]
+        F2["RPC_URL"]
+        F3["TOKEN_DISTRIBUTOR"]
+        F4["BACKEND_URL"]
+        F5["GRADUATION_INTERNAL_SECRET"]
+    end
+
+    subgraph FunctionEnvSolana["graduation-solana Environment"]
+        direction LR
+        S1["AUTOMATION_PRIVATE_KEY<br/>(base58)"]
+        S2["SOLANA_RPC_URL"]
+        S3["IAO_PROGRAM_ID"]
+        S4["BACKEND_URL"]
+        S5["GRADUATION_INTERNAL_SECRET"]
+    end
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>8. Test Graduation Flow</h2>
+        <div class="description">
+            To test graduation with small amounts instead of 25k USDC, set the TEST_GRADUATION_THRESHOLD
+            environment variable on Cloud Run. The threshold is in token units with 18 decimals for EVM.
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph TestSetup["Test Configuration"]
+        T1["Set TEST_GRADUATION_THRESHOLD<br/>on Cloud Run"]
+        T2["Example: 5 requests @ $0.01<br/>= 1,250 tokens<br/>= 1250000000000000000000"]
+    end
+
+    subgraph Flow["Graduation Triggers Early"]
+        F1["User makes 5 requests"]
+        F2["Threshold crossed"]
+        F3["Graduation dispatched"]
+        F4["Cloud Function executes TX"]
+        F5["Token graduated"]
+    end
+
+    T1 --> T2 --> F1 --> F2 --> F3 --> F4 --> F5
+
+    style T1 fill:#f78166
+    style T2 fill:#f78166
+    style F5 fill:#238636
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>9. Deployment Commands</h2>
+        <div class="description">
+            Quick reference for deploying all services.
+        </div>
+        <pre style="background: #161b22; padding: 20px; border-radius: 8px; overflow-x: auto;">
+# Deploy Cloud Run backends
+gcloud run deploy apix-backend --source . --region us-central1 --allow-unauthenticated
+gcloud run deploy apix-backend-v2 --source . --region us-central1 --allow-unauthenticated --min-instances=1
+
+# Deploy Cloud Functions
+cd cloud-functions/graduation-evm
+gcloud functions deploy graduation-evm --gen2 --runtime=nodejs20 --region=us-central1 \
+  --source=. --entry-point=graduateEvm --trigger-http --allow-unauthenticated --timeout=540s
+
+cd ../graduation-solana
+gcloud functions deploy graduation-solana --gen2 --runtime=nodejs20 --region=us-central1 \
+  --source=. --entry-point=graduateSolana --trigger-http --allow-unauthenticated --timeout=540s
+
+# Set test graduation threshold
+gcloud run services update apix-backend-v2 --region us-central1 \
+  --set-env-vars "TEST_GRADUATION_THRESHOLD=1250000000000000000000"
+
+# Remove test threshold
+gcloud run services update apix-backend-v2 --region us-central1 \
+  --remove-env-vars "TEST_GRADUATION_THRESHOLD"
+        </pre>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            },
+            sequence: {
+                useMaxWidth: true,
+                showSequenceNumbers: true
+            }
+        });
+    </script>
+</body>
+</html>

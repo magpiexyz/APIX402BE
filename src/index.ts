@@ -1468,6 +1468,7 @@ app.post('/api/register', async (req, res) => {
       fulfilledCount: "0",
       tags: validatedTags.length > 0 ? validatedTags : undefined,
       logoUrl: logoUrl || undefined,
+      distributionModel: 'merkle',  // Use Merkle claim distribution for all new tokens
       createdAt: now,
       updatedAt: now,
     }
@@ -1857,6 +1858,49 @@ app.get('/api/server/:slug', async (req, res) => {
 })
 
 /**
+ * DELETE /api/server/:slug - Delete a server (admin only)
+ * Requires X-Graduation-Secret header for authentication
+ */
+app.delete('/api/server/:slug', async (req, res) => {
+  const serverSlug = req.params.slug.toLowerCase()
+
+  // Auth check - require internal secret
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Delete the token document
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    await db.collection('iao-tokens').doc(tokenEntry.id.toLowerCase()).delete()
+
+    console.log(`🗑️ Server deleted: ${serverSlug} (${tokenEntry.id})`)
+
+    return res.status(200).json({
+      success: true,
+      message: `Server "${serverSlug}" deleted successfully`,
+      deletedId: tokenEntry.id
+    })
+  } catch (error: any) {
+    console.error("Error deleting server:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to delete server"
+    })
+  }
+})
+
+/**
  * GET /api/server/:slug/agents - Get agents that use this server's APIs
  *
  * Returns public agents that have tools from this server in their availableTools.
@@ -2238,7 +2282,9 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
       console.log(`⏭️  Solana bonding metrics for: ${tokenEntry.id}`)
 
       // Graduation threshold in tokens (625M tokens with 18 decimals) - matches EVM
-      const tokenGraduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
+      // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+      const testThreshold = process.env.TEST_GRADUATION_THRESHOLD
+      const tokenGraduationThreshold = testThreshold ? BigInt(testThreshold) : BigInt("625000000000000000000000000")
 
       // Read virtualTokensDistributed from DB for Merkle model, else placeholder
       const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
@@ -2272,7 +2318,9 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
       // Merkle distribution model: read bonding progress from DB instead of on-chain
       console.log(`📊 Fetching DB-tracked metrics for Merkle token: ${tokenEntry.id}`)
 
-      const tokenGraduationThreshold = BigInt("625000000000000000000000000")
+      // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+      const testThresholdMerkle = process.env.TEST_GRADUATION_THRESHOLD
+      const tokenGraduationThreshold = testThresholdMerkle ? BigInt(testThresholdMerkle) : BigInt("625000000000000000000000000")
       const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
 
       let bondingProgress = 0
@@ -2288,7 +2336,8 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
 
       let uniswapLink: string | undefined
       if (isGraduated) {
-        uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
+        // Use swap interface for Base Sepolia (explore page doesn't support testnets)
+        uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
       }
 
       contractMetrics = {
@@ -2385,7 +2434,8 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         // Generate Uniswap link if graduated (Base Sepolia)
         let uniswapLink: string | undefined
         if (isGraduated) {
-          uniswapLink = `https://app.uniswap.org/explore/tokens/base-sepolia/${tokenEntry.id}`
+          // Use swap interface for Base Sepolia (explore page doesn't support testnets)
+          uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
         }
 
         contractMetrics = {
@@ -3248,9 +3298,18 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
                         // Graduation thresholds: EVM (18 decimals) vs Solana (9 decimals)
                         const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
                         const isSolana = solanaChains.includes(incrementResult.chainId)
-                        const threshold = isSolana
+
+                        // Check for test graduation threshold override (for testing with small amounts)
+                        const testThreshold = process.env.TEST_GRADUATION_THRESHOLD
+                        const defaultThreshold = isSolana
                           ? BigInt("625000000000000000")        // 625M with 9 decimals
                           : BigInt("625000000000000000000000000") // 625M with 18 decimals
+
+                        const threshold = testThreshold ? BigInt(testThreshold) : defaultThreshold
+
+                        if (testThreshold) {
+                          console.log(`⚠️ TEST MODE: Using graduation threshold override: ${testThreshold}`)
+                        }
 
                         if (BigInt(incrementResult.newTotal) >= threshold) {
                           console.log(`🎓 Graduation threshold crossed for ${tokenEntry.id}! Dispatching graduation task...`)
@@ -3432,7 +3491,9 @@ app.get('/api/earnings/:serverSlug/:userAddress', async (req, res) => {
     // Get token DB entry for bonding progress
     const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
     const virtualDistributed = BigInt(tokenDBEntry?.virtualTokensDistributed || "0")
-    const graduationThreshold = BigInt("625000000000000000000000000") // 625M tokens with 18 decimals
+    // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+    const testThresholdEarnings = process.env.TEST_GRADUATION_THRESHOLD
+    const graduationThreshold = testThresholdEarnings ? BigInt(testThresholdEarnings) : BigInt("625000000000000000000000000")
     const bondingProgress = graduationThreshold > 0n
       ? Number((virtualDistributed * 10000n) / graduationThreshold) / 100
       : 0
@@ -3475,7 +3536,9 @@ app.get('/api/earnings/:serverSlug', async (req, res) => {
     const earnings = await earningsService.getEarningsByToken(tokenEntry.id)
     const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
     const totalVirtualDistributed = tokenDBEntry?.virtualTokensDistributed || "0"
-    const graduationThreshold = "625000000000000000000000000"
+    // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+    const testThresholdAll = process.env.TEST_GRADUATION_THRESHOLD
+    const graduationThreshold = testThresholdAll || "625000000000000000000000000"
 
     return res.status(200).json({
       success: true,
@@ -3661,13 +3724,40 @@ app.post('/api/agents', async (req, res) => {
 })
 
 // GET /api/agents - List all public agents
+// Supports ?chainType=solana or ?chainType=evm filter
 app.get('/api/agents', async (req, res) => {
   try {
     if (!agentService) {
       return res.status(503).json({ error: "Agent service not initialized" })
     }
 
-    const agents = await agentService.getPublicAgents()
+    const chainType = req.query.chainType as string | undefined
+
+    let serverSlugsForChainType: string[] | undefined
+
+    // If chainType filter is specified, get all servers matching that chainType
+    if (chainType && tokenService) {
+      const allServers = await tokenService.listAll()
+      const solanaChainIds = ['devnet', 'mainnet-beta', 'testnet']
+
+      serverSlugsForChainType = allServers
+        .filter(server => {
+          const serverChainType = (server as any).chainType as string | undefined
+          if (chainType === 'solana') {
+            return serverChainType === 'solana' || solanaChainIds.includes(server.chainId)
+          } else if (chainType === 'evm') {
+            return serverChainType === 'evm' || !solanaChainIds.includes(server.chainId)
+          }
+          return true
+        })
+        .map(server => server.slug)
+    }
+
+    const agents = await agentService.listAgents({
+      isPublic: true,
+      chainType,
+      serverSlugsForChainType,
+    })
 
     return res.json({
       success: true,
@@ -4587,6 +4677,41 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
 })
 
 /**
+ * INTERNAL: Fix token distribution model
+ * Temporary endpoint to fix tokens missing distributionModel field
+ */
+app.post('/internal/fix-distribution-model/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Token service not initialized' })
+    }
+
+    const token = await tokenService.getItem(tokenAddress.toLowerCase())
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+
+    // Update the token with distributionModel
+    const updated = { ...token, distributionModel: 'merkle', updatedAt: new Date().toISOString() }
+    await tokenService.putItem(updated)
+
+    console.log(`✅ Fixed distributionModel for ${tokenAddress}`)
+    return res.json({ success: true, tokenAddress, distributionModel: 'merkle' })
+  } catch (err: any) {
+    console.error(`❌ Error fixing distributionModel for ${tokenAddress}:`, err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
  * INTERNAL GRADUATION ENDPOINT
  * Called by Cloud Tasks to build Merkle tree and trigger Cloud Function for on-chain graduation.
  * Auth: X-Graduation-Secret header must match GRADUATION_INTERNAL_SECRET env var.
@@ -4772,6 +4897,213 @@ app.get('/internal/graduation-earnings/:tokenAddress', async (req, res) => {
   } catch (error: any) {
     console.error(`❌ Failed to fetch graduation earnings for ${tokenAddress}:`, error)
     return res.status(500).json({ error: 'Failed to fetch earnings', message: error.message })
+  }
+})
+
+/**
+ * DEV: Seed test data for graduation testing
+ * Only works with internal secret authentication
+ */
+app.post('/internal/seed-test-data/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService || !earningsService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const { userAddress, tokensEarned, feePaid, virtualDistributed, totalFeesCollected } = req.body
+
+    if (!userAddress || !tokensEarned) {
+      return res.status(400).json({ error: 'userAddress and tokensEarned are required' })
+    }
+
+    const normalizedToken = tokenAddress.toLowerCase()
+    const normalizedUser = userAddress.toLowerCase()
+
+    // Get token to verify it exists
+    const token = await tokenService.getItem(normalizedToken)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+
+    // Update token's virtualTokensDistributed and totalFeesCollected if provided
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    const tokenDocRef = db.collection('iao-tokens').doc(normalizedToken)
+
+    const tokenUpdates: any = { updatedAt: new Date().toISOString() }
+    if (virtualDistributed) {
+      tokenUpdates.virtualTokensDistributed = virtualDistributed
+    }
+    if (totalFeesCollected) {
+      tokenUpdates.totalFeesCollected = totalFeesCollected
+    }
+    await tokenDocRef.update(tokenUpdates)
+
+    // Add earnings entry
+    const earningsDocId = `${normalizedToken}#${normalizedUser}`
+    const earningsDocRef = db.collection('token-earnings').doc(earningsDocId)
+    const now = new Date().toISOString()
+
+    await earningsDocRef.set({
+      id: earningsDocId,
+      tokenAddress: normalizedToken,
+      userAddress: normalizedUser,
+      totalTokensEarned: tokensEarned,
+      totalFeesPaid: feePaid || '0',
+      callCount: '1',
+      lastEarnedAt: now,
+      claimed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    console.log(`🧪 Test data seeded for ${tokenAddress}: user=${userAddress}, tokens=${tokensEarned}`)
+
+    return res.status(200).json({
+      success: true,
+      tokenAddress: normalizedToken,
+      userAddress: normalizedUser,
+      tokensEarned,
+      virtualDistributed: virtualDistributed || token.virtualTokensDistributed,
+      totalFeesCollected: totalFeesCollected || token.totalFeesCollected,
+    })
+  } catch (error: any) {
+    console.error(`❌ Failed to seed test data for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Failed to seed test data', message: error.message })
+  }
+})
+
+/**
+ * WEEKLY FEE DISTRIBUTION ENDPOINT
+ * Triggered by Cloud Scheduler to distribute accumulated fees to builders and team.
+ * Gets all non-graduated tokens with pending fees and calls the fee-distribution Cloud Function.
+ */
+app.post('/internal/trigger-fee-distribution', async (req, res) => {
+  const internalSecret = process.env.FEE_DISTRIBUTION_SECRET
+  if (internalSecret && req.headers['x-fee-distribution-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+
+    // Get all non-graduated tokens with pending fees
+    const tokensSnapshot = await db.collection('iao-tokens')
+      .where('graduated', '==', false)
+      .get()
+
+    const tokensWithFees: Array<{ tokenAddress: string; pendingFees: string }> = []
+
+    for (const doc of tokensSnapshot.docs) {
+      const token = doc.data()
+      // Check if token has undistributed fees
+      const pendingFees = token.pendingFeesForDistribution || '0'
+      if (BigInt(pendingFees) > 0n) {
+        tokensWithFees.push({
+          tokenAddress: doc.id,
+          pendingFees,
+        })
+      }
+    }
+
+    if (tokensWithFees.length === 0) {
+      console.log('ℹ️ No tokens with pending fees for distribution')
+      return res.status(200).json({
+        status: 'no_pending_fees',
+        message: 'No tokens have pending fees',
+      })
+    }
+
+    console.log(`📊 Found ${tokensWithFees.length} tokens with pending fees`)
+
+    // Call fee distribution Cloud Function
+    const feeDistributionUrl = process.env.FEE_DISTRIBUTION_FUNCTION_URL
+    if (!feeDistributionUrl) {
+      console.error('FEE_DISTRIBUTION_FUNCTION_URL not configured')
+      return res.status(500).json({ error: 'Fee distribution function URL not configured' })
+    }
+
+    const response = await fetch(feeDistributionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(internalSecret ? { 'X-Fee-Distribution-Secret': internalSecret } : {}),
+      },
+      body: JSON.stringify({
+        action: 'distribute-fees',
+        tokens: tokensWithFees,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Cloud Function failed: ${response.status} ${errorText}`)
+    }
+
+    const result = await response.json() as { txHash?: string; tokensProcessed?: number }
+    console.log(`✅ Fee distribution initiated: ${JSON.stringify(result)}`)
+
+    return res.status(200).json({
+      status: 'distribution_initiated',
+      tokensCount: tokensWithFees.length,
+      ...result,
+    })
+  } catch (error: any) {
+    console.error('❌ Fee distribution trigger failed:', error)
+    return res.status(500).json({ error: 'Failed to trigger fee distribution', message: error.message })
+  }
+})
+
+/**
+ * FEE DISTRIBUTION CALLBACK ENDPOINT
+ * Called by Cloud Function after on-chain fee distribution TX succeeds.
+ * Clears pendingFeesForDistribution for processed tokens.
+ */
+app.post('/internal/fee-distribution-confirm', async (req, res) => {
+  const internalSecret = process.env.FEE_DISTRIBUTION_SECRET
+  if (internalSecret && req.headers['x-fee-distribution-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const { txHash, tokens, timestamp } = req.body || {}
+
+    if (!tokens || !Array.isArray(tokens)) {
+      return res.status(400).json({ error: 'Missing tokens array' })
+    }
+
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    const batch = db.batch()
+    const now = new Date().toISOString()
+
+    for (const tokenAddress of tokens) {
+      const docRef = db.collection('iao-tokens').doc(tokenAddress.toLowerCase())
+      batch.update(docRef, {
+        pendingFeesForDistribution: '0',
+        lastFeeDistributionAt: timestamp || now,
+        lastFeeDistributionTxHash: txHash,
+        updatedAt: now,
+      })
+    }
+
+    await batch.commit()
+
+    console.log(`✅ Fee distribution confirmed for ${tokens.length} tokens (tx: ${txHash || 'unknown'})`)
+    return res.status(200).json({ status: 'confirmed', tokensUpdated: tokens.length })
+  } catch (error: any) {
+    console.error('❌ Fee distribution confirmation failed:', error)
+    return res.status(500).json({ error: 'Confirmation failed', message: error.message })
   }
 })
 

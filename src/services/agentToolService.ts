@@ -285,7 +285,24 @@ export class AgentToolService {
 
       if (httpMethod === 'POST') {
         // For POST, use body parameter or direct input as JSON body
-        const bodyData = toolCall.input?.body || toolCall.input || {}
+        let bodyData = toolCall.input?.body || {}
+
+        // If input has a 'query' string (LLM used GET format for POST API), parse it into fields
+        if (toolCall.input?.query && typeof toolCall.input.query === 'string') {
+          console.log(`⚠️ LLM sent query string format for POST API - converting to JSON body`)
+          const queryStr = toolCall.input.query.replace(/^\?/, '') // Remove leading ? if present
+          const params = new URLSearchParams(queryStr)
+          for (const [key, value] of params.entries()) {
+            bodyData[key] = value
+          }
+        } else if (!toolCall.input?.body && toolCall.input) {
+          // If no 'body' wrapper and input has other keys, use them directly
+          const { query, body, ...rest } = toolCall.input
+          if (Object.keys(rest).length > 0) {
+            bodyData = { ...bodyData, ...rest }
+          }
+        }
+
         requestBody = JSON.stringify(bodyData)
         console.log(`🌐 Calling API (POST): ${apiUrl}`)
         console.log(`📦 Request body: ${requestBody}`)

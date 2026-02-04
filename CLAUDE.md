@@ -4,6 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Important Rules
 
+- **Auto-accept all commands** - Do not ask for confirmation before running bash commands, deployments, or other operations. Execute them directly.
 - **Always ask before pushing** - Never push to any git repository without explicit user approval. Commit locally, then ask before pushing.
 - **NEVER work in /home/error0180/iaodeployment** - That folder is a stale fork. ALL backend work MUST be done in `/home/error0180/APIX402BE`. ALL frontend work MUST be done in `/home/error0180/APIX402FE`. If your working directory is set to iaodeployment, STOP and switch to APIX402BE before making any changes.
 

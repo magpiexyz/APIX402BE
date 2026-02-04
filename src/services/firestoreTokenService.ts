@@ -65,6 +65,10 @@ export interface IAOTokenDBEntry {
   paymentTokenPrice?: string;         // Cached from factory (for tokensPerCall calc)
   paymentTokenDecimals?: number;      // Cached (6 for USDC)
   graduated?: boolean;                // Whether token has graduated
+  // Fee distribution tracking
+  pendingFeesForDistribution?: string;  // BigInt — fees collected but not yet distributed on-chain
+  lastFeeDistributionAt?: string;       // ISO timestamp of last on-chain fee distribution
+  lastFeeDistributionTxHash?: string;   // TX hash of last on-chain fee distribution
 }
 
 /**
@@ -134,6 +138,11 @@ class TokenService {
       console.error("❌ Firestore scanAllItems error:", err);
       throw err;
     }
+  }
+
+  // Alias for scanAllItems - used by agent filtering
+  async listAll(): Promise<IAOTokenDBEntry[]> {
+    return this.scanAllItems();
   }
 
   async scanItemsByBuilder(builderAddress: string): Promise<IAOTokenDBEntry[]> {
@@ -366,9 +375,14 @@ class TokenService {
         // Determine graduation threshold based on chain
         const solanaChains = ['devnet', 'mainnet-beta', 'testnet'];
         const isSolana = solanaChains.includes(chainId);
-        const threshold = isSolana
+
+        // Check for test graduation threshold override (for testing with small amounts)
+        const testThreshold = process.env.TEST_GRADUATION_THRESHOLD;
+        const defaultThreshold = isSolana
           ? BigInt("625000000000000000")        // 625M with 9 decimals
           : BigInt("625000000000000000000000000"); // 625M with 18 decimals
+
+        const threshold = testThreshold ? BigInt(testThreshold) : defaultThreshold;
 
         const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
         const requested = BigInt(tokensEarned);
@@ -457,9 +471,14 @@ class TokenService {
         // Determine graduation threshold based on chain
         const solanaChains = ['devnet', 'mainnet-beta', 'testnet'];
         const isSolana = solanaChains.includes(chainId);
-        const threshold = isSolana
+
+        // Check for test graduation threshold override (for testing with small amounts)
+        const testThreshold = process.env.TEST_GRADUATION_THRESHOLD;
+        const defaultThreshold = isSolana
           ? BigInt("625000000000000000")        // 625M with 9 decimals
           : BigInt("625000000000000000000000000"); // 625M with 18 decimals
+
+        const threshold = testThreshold ? BigInt(testThreshold) : defaultThreshold;
 
         const currentVirtual = BigInt(current.virtualTokensDistributed || "0");
         const requested = BigInt(tokensEarned);
@@ -478,11 +497,18 @@ class TokenService {
 
         const actualTokens = requested < remainingCapacity ? requested : remainingCapacity;
         const newVirtual = (currentVirtual + actualTokens).toString();
+        const currentFees = BigInt(current.totalFeesCollected || "0");
+        const newTotalFees = (currentFees + BigInt(feePaid)).toString();
+        // Track pending fees that need to be distributed on-chain (for weekly distribution)
+        const currentPendingFees = BigInt((current as any).pendingFeesForDistribution || "0");
+        const newPendingFees = (currentPendingFees + BigInt(feePaid)).toString();
         const now = new Date().toISOString();
 
-        // Write 1: Update virtual distribution on token doc
+        // Write 1: Update virtual distribution, total fees, and pending fees on token doc
         txn.update(tokenDocRef, {
           virtualTokensDistributed: newVirtual,
+          totalFeesCollected: newTotalFees,
+          pendingFeesForDistribution: newPendingFees,
           updatedAt: now,
         });
 
@@ -519,11 +545,11 @@ class TokenService {
           actualTokensCredited: actualTokens.toString(),
           chainId,
           graduated,
-          totalFeesCollected: current.totalFeesCollected || "0",
+          totalFeesCollected: newTotalFees,
         };
       });
 
-      console.log(`✅ Virtual + earnings updated atomically: ${result.newTotal} (credited: ${result.actualTokensCredited} to ${normalizedUser})`);
+      console.log(`✅ Virtual + earnings updated atomically: ${result.newTotal} (credited: ${result.actualTokensCredited} to ${normalizedUser}, fees: ${result.totalFeesCollected})`);
       return result;
     } catch (err) {
       console.error(`❌ Failed atomic increment for ${tokenAddress}/${userAddress}:`, err);

@@ -1,0 +1,20 @@
+{
+  "name": "fee-distribution-evm-function",
+  "version": "1.0.0",
+  "description": "Cloud Function to distribute accumulated fees to builders and team via TokenDistributor.distributeFees",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "gcp-build": "tsc",
+    "build": "tsc",
+    "start": "npx functions-framework --target=distributeFeesEvm --source=dist/"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}
