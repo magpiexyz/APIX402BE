@@ -7,8 +7,9 @@ set -e
 # Outputs BACKEND_URL to stdout (last line) for use by other scripts
 #
 # Usage:
-#   ./deploy-cloud-run.sh              # Full build + deploy
-#   ./deploy-cloud-run.sh --no-build   # Deploy only (update env/secrets, use existing image)
+#   ./deploy-cloud-run.sh                # Remote build (Cloud Build) + deploy
+#   ./deploy-cloud-run.sh --local-build  # Local Docker build + deploy
+#   ./deploy-cloud-run.sh --no-build     # Deploy only (update env/secrets, use existing image)
 #
 # Prerequisites:
 # - Run ./setup-secrets.sh first to create secrets
@@ -17,10 +18,15 @@ set -e
 
 # Parse arguments
 SKIP_BUILD=false
+LOCAL_BUILD=false
 for arg in "$@"; do
   case $arg in
     --no-build)
       SKIP_BUILD=true
+      shift
+      ;;
+    --local-build)
+      LOCAL_BUILD=true
       shift
       ;;
   esac
@@ -96,13 +102,28 @@ if [ "$SKIP_BUILD" = false ]; then
       --description="APIX Backend Docker images" >&2
   fi
 
-  echo -e "${YELLOW}Building Docker image (with Kaniko cache)...${NC}" >&2
+  if [ "$LOCAL_BUILD" = true ]; then
+    # Local Docker build
+    echo -e "${YELLOW}Building Docker image locally...${NC}" >&2
 
-  # Build with Kaniko caching for faster subsequent builds
-  gcloud builds submit \
-    --config=cloudbuild-image.yaml \
-    --substitutions="_IMAGE_TAG=$IMAGE_TAG" \
-    . >&2
+    # Configure Docker authentication for Artifact Registry
+    gcloud auth configure-docker us-central1-docker.pkg.dev --quiet >&2
+
+    # Build locally
+    docker build -t "$IMAGE_TAG" . >&2
+
+    # Push to Artifact Registry
+    echo -e "${YELLOW}Pushing image to Artifact Registry...${NC}" >&2
+    docker push "$IMAGE_TAG" >&2
+  else
+    # Remote Cloud Build (default)
+    echo -e "${YELLOW}Building Docker image remotely (Cloud Build with Kaniko cache)...${NC}" >&2
+
+    gcloud builds submit \
+      --config=cloudbuild-image.yaml \
+      --substitutions="_IMAGE_TAG=$IMAGE_TAG" \
+      . >&2
+  fi
 else
   echo -e "${YELLOW}Skipping build (--no-build flag)${NC}" >&2
   echo -e "${YELLOW}Using existing image: $IMAGE_TAG${NC}" >&2
