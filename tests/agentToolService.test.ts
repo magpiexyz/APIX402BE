@@ -81,6 +81,39 @@ describe('AgentToolService', () => {
     updatedAt: '2024-01-01',
   };
 
+  // Mock servers that match the parsed tool names for executeTool tests
+  // Tool name 'call_test_server_get_data' parses to serverSlug='test', apiSlug='server_get_data'
+  const mockServersForExecuteTool: IaoServer[] = [
+    {
+      id: '0xTestToken',
+      slug: 'test',
+      name: 'Test',
+      symbol: 'TEST',
+      builder: '0xBuilder',
+      paymentToken: '0xUSDC',
+      apis: [
+        {
+          index: 0,
+          slug: 'server_get_data',
+          name: 'Server Get Data',
+          description: 'Fetches data',
+          fee: '1000000',
+          method: 'GET',
+          createdAt: '2024-01-01',
+        },
+        {
+          index: 1,
+          slug: 'data',
+          name: 'Data',
+          description: 'Get data',
+          fee: '1000000',
+          method: 'GET',
+          createdAt: '2024-01-01',
+        },
+      ],
+    },
+  ];
+
   beforeEach(() => {
     service = new AgentToolService('http://localhost:3000');
     vi.clearAllMocks();
@@ -303,11 +336,17 @@ describe('AgentToolService', () => {
     };
 
     it('should execute tool successfully', async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: { result: 'success' } }),
-        headers: new Map() as any,
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ data: { result: 'success' } }),
+          headers: new Map() as any,
+        } as any);
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       const result = await service.executeTool(mockToolCall, mockAgent);
@@ -319,11 +358,17 @@ describe('AgentToolService', () => {
     });
 
     it('should handle query starting with ?', async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({ result: 'ok' }),
-        headers: new Map() as any,
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: 'ok' }),
+          headers: new Map() as any,
+        } as any);
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       const toolCall = {
@@ -342,25 +387,31 @@ describe('AgentToolService', () => {
     });
 
     it('should handle tool with no query', async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({ result: 'ok' }),
-        headers: new Map() as any,
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: 'ok' }),
+          headers: new Map() as any,
+        } as any);
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       // Tool name format: call_{serverSlug}_{apiSlug}
-      // For simple slugs: call_test_data -> server=test, api=data
+      // Tool 'call_test_server_get_data' parses to server='test', api='server_get_data'
       const toolCall = {
         id: 'tool-1',
-        name: 'call_test_data',
+        name: 'call_test_server_get_data',
         input: {},
       };
 
       await service.executeTool(toolCall, mockAgent);
 
       expect(fetch).toHaveBeenCalledWith(
-        'http://localhost:3000/api/test/data',
+        'http://localhost:3000/api/test/server_get_data',
         expect.any(Object)
       );
       consoleSpy.mockRestore();
@@ -383,11 +434,17 @@ describe('AgentToolService', () => {
     });
 
     it('should handle API error response', async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: async () => 'Internal Server Error',
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call (returns error)
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          text: async () => 'Internal Server Error',
+        } as any);
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -409,11 +466,17 @@ describe('AgentToolService', () => {
       };
 
       const compressedData = Buffer.from(JSON.stringify({ compressed: true }));
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        arrayBuffer: async () => compressedData.buffer,
-        headers: mockHeaders,
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call (zstd compressed)
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: async () => compressedData.buffer,
+          headers: mockHeaders,
+        } as any);
       vi.mocked(decompressZstd).mockReturnValue(compressedData);
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -432,11 +495,17 @@ describe('AgentToolService', () => {
         },
       };
 
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        arrayBuffer: async () => new ArrayBuffer(0),
-        headers: mockHeaders,
-      } as any);
+      // First call: fetchAvailableServers, Second call: actual API call (zstd that fails to decompress)
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: async () => new ArrayBuffer(0),
+          headers: mockHeaders,
+        } as any);
       vi.mocked(decompressZstd).mockImplementation(() => {
         throw new Error('Decompression failed');
       });
@@ -452,7 +521,13 @@ describe('AgentToolService', () => {
     });
 
     it('should handle network error', async () => {
-      vi.mocked(fetch).mockRejectedValue(new Error('Network timeout'));
+      // First call: fetchAvailableServers, Second call: actual API call (network error)
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ servers: mockServersForExecuteTool }),
+        } as any)
+        .mockRejectedValueOnce(new Error('Network timeout'));
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
