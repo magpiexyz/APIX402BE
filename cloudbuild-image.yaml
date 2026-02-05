@@ -1,0 +1,20 @@
+# Cloud Build configuration for building Docker image with caching
+# Uses Kaniko for Docker layer caching to speed up subsequent builds
+
+steps:
+  - name: 'gcr.io/kaniko-project/executor:latest'
+    args:
+      - '--destination=${_IMAGE_TAG}'
+      - '--cache=true'
+      - '--cache-ttl=168h'  # 7 days cache
+      - '--dockerfile=Dockerfile'
+      - '--context=.'
+      - '--compressed-caching=false'
+      - '--use-new-run'
+
+substitutions:
+  _IMAGE_TAG: 'us-central1-docker.pkg.dev/${PROJECT_ID}/apix-backend/apix-backend-v2:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'

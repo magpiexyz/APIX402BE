@@ -1,0 +1,36 @@
+# Git
+.git/
+.gitignore
+
+# Dependencies (will be installed in container)
+node_modules/
+
+# Development files
+.env
+.env.*
+*.log
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+coverage/
+*.test.ts
+*.spec.ts
+__tests__/
+
+# Documentation
+*.md
+docs/
+
+# Cloud Functions (deployed separately)
+cloud-functions/
+
+# Build artifacts (rebuilt in container)
+api/dist/
+
+# Scripts (not needed in container)
+*.sh
+cloudbuild*.yaml
