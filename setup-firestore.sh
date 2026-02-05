@@ -426,8 +426,11 @@ verify_firestore() {
   echo ""
 
   # Check rules deployment
-  echo -e "${YELLOW}Checking deployed rules...${NC}"
-  firebase firestore:rules --project $GCP_PROJECT_ID 2>/dev/null || echo "  (Run 'firebase firestore:rules' to view)"
+  echo -e "${YELLOW}Firestore Rules:${NC}"
+  echo -e "  View at: https://console.firebase.google.com/project/$GCP_PROJECT_ID/firestore/rules"
+  if [ -f "firestore.rules" ]; then
+    echo -e "  Local file: ${GREEN}firestore.rules${NC} (deployed)"
+  fi
   echo ""
 
   # Check indexes
