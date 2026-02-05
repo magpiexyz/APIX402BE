@@ -1,129 +1,81 @@
 # Cloud Build configuration for APIX Backend
-# Deploys Cloud Run first, then Cloud Functions with the captured URL
-#
-# Prerequisites:
-# 1. Run ./setup-secrets.sh locally first to create secrets
-# 2. Set up Cloud Build trigger with substitution variables
-#
-# Required Secret Manager secrets:
-#   - thirdweb-secret-key
-#   - builder-secret-phrase
-#   - anthropic-api-key
-#   - company-wallet-private-key
-#   - cloudinary-api-secret
-#   - graduation-internal-secret
-#   - automation-private-key
-#   - automation-private-key-solana
+# Runs tests, builds Docker image, and deploys to Cloud Run
 
 substitutions:
-  # Non-sensitive variables - override in trigger settings if needed
-  _THIRDWEB_CLIENT_ID: '7597a36e543e4740ce33d632eb09edd5'
-  _THIRDWEB_SERVER_WALLET_ADDRESS: '0xa493eAc6A55852374bD3a4a187f09e125343549c'
-  _LLM_PROVIDER: 'claude'
-  _LLM_MODEL: 'claude-3-5-sonnet-20241022'
-  _CLOUDINARY_CLOUD_NAME: 'dvv1kfxuuc'
-  _CLOUDINARY_API_KEY: '879985114735348'
-  _RPC_URL: 'https://sepolia.base.org'
-  _TOKEN_DISTRIBUTOR: '0xYourTokenDistributorAddress'
-  _SOLANA_RPC_URL: 'https://api.devnet.solana.com'
-  _IAO_PROGRAM_ID: 'FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA'
+  _SERVICE_NAME: apix-backend
+  _REGION: us-central1
 
 steps:
-  # ============================================
-  # Step 1: Install dependencies
-  # ============================================
+  # Install dependencies
   - name: 'node:20'
     entrypoint: yarn
     args: ['install', '--frozen-lockfile']
     id: 'install'
 
-  # ============================================
-  # Step 2: Run tests
-  # ============================================
+  # Run tests
   - name: 'node:20'
     entrypoint: yarn
     args: ['test']
     id: 'test'
     waitFor: ['install']
 
-  # ============================================
-  # Step 3: Build TypeScript
-  # ============================================
+  # Run tests with coverage (optional - for reporting)
+  - name: 'node:20'
+    entrypoint: yarn
+    args: ['test:coverage']
+    id: 'coverage'
+    waitFor: ['install']
+
+  # Build TypeScript
   - name: 'node:20'
     entrypoint: yarn
     args: ['build']
     id: 'build'
     waitFor: ['test']
 
-  # ============================================
-  # Step 4: Generate .env file from substitutions
-  # ============================================
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'generate-env'
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
     waitFor: ['build']
-    entrypoint: bash
-    env:
-      - 'GCP_PROJECT_ID=$PROJECT_ID'
-      - 'THIRDWEB_CLIENT_ID=${_THIRDWEB_CLIENT_ID}'
-      - 'THIRDWEB_SERVER_WALLET_ADDRESS=${_THIRDWEB_SERVER_WALLET_ADDRESS}'
-      - 'LLM_PROVIDER=${_LLM_PROVIDER}'
-      - 'LLM_MODEL=${_LLM_MODEL}'
-      - 'CLOUDINARY_CLOUD_NAME=${_CLOUDINARY_CLOUD_NAME}'
-      - 'CLOUDINARY_API_KEY=${_CLOUDINARY_API_KEY}'
-      - 'RPC_URL=${_RPC_URL}'
-      - 'TOKEN_DISTRIBUTOR=${_TOKEN_DISTRIBUTOR}'
-      - 'SOLANA_RPC_URL=${_SOLANA_RPC_URL}'
-      - 'IAO_PROGRAM_ID=${_IAO_PROGRAM_ID}'
     args:
-      - '-c'
-      - |
-        cat > .env << EOF
-        GCP_PROJECT_ID=$GCP_PROJECT_ID
-        THIRDWEB_CLIENT_ID=$THIRDWEB_CLIENT_ID
-        THIRDWEB_SERVER_WALLET_ADDRESS=$THIRDWEB_SERVER_WALLET_ADDRESS
-        LLM_PROVIDER=$LLM_PROVIDER
-        LLM_MODEL=$LLM_MODEL
-        CLOUDINARY_CLOUD_NAME=$CLOUDINARY_CLOUD_NAME
-        CLOUDINARY_API_KEY=$CLOUDINARY_API_KEY
-        RPC_URL=$RPC_URL
-        TOKEN_DISTRIBUTOR=$TOKEN_DISTRIBUTOR
-        SOLANA_RPC_URL=$SOLANA_RPC_URL
-        IAO_PROGRAM_ID=$IAO_PROGRAM_ID
-        EOF
-        echo "Generated .env file:"
-        cat .env
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+      - '.'
 
-  # ============================================
-  # Step 5: Deploy Cloud Run
-  # ============================================
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy-cloud-run'
-    waitFor: ['generate-env']
-    entrypoint: bash
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
     args:
-      - '-c'
-      - |
-        chmod +x deploy-cloud-run.sh
-        ./deploy-cloud-run.sh > /workspace/backend_url.txt
-        echo "Backend URL: $(cat /workspace/backend_url.txt)"
-    timeout: '1200s'
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
 
-  # ============================================
-  # Step 6: Deploy Cloud Functions
-  # ============================================
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy-cloud-functions'
-    waitFor: ['deploy-cloud-run']
-    entrypoint: bash
+  - name: 'gcr.io/cloud-builders/docker'
     args:
-      - '-c'
-      - |
-        BACKEND_URL=$(cat /workspace/backend_url.txt)
-        chmod +x deploy-cloud-functions.sh
-        ./deploy-cloud-functions.sh "$BACKEND_URL"
-    timeout: '1200s'
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--min-instances=1'
+      - '--max-instances=10'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--timeout=300'
+      - '--set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID,THIRDWEB_SECRET_KEY=${_THIRDWEB_SECRET_KEY},THIRDWEB_CLIENT_ID=${_THIRDWEB_CLIENT_ID},THIRDWEB_SERVER_WALLET_ADDRESS=${_THIRDWEB_SERVER_WALLET_ADDRESS},ANTHROPIC_API_KEY=${_ANTHROPIC_API_KEY},LLM_PROVIDER=${_LLM_PROVIDER},LLM_MODEL=${_LLM_MODEL}'
+
+images:
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-timeout: '2400s'  # 40 minutes total
