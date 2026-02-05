@@ -24,7 +24,7 @@ substitutions:
   _CLOUDINARY_CLOUD_NAME: 'dvv1kfxuuc'
   _CLOUDINARY_API_KEY: '879985114735348'
   _RPC_URL: 'https://sepolia.base.org'
-  _TOKEN_DISTRIBUTOR: '0x180160a4aca6A5913765571763a07D1158419B76'
+  _TOKEN_DISTRIBUTOR: '0xYourTokenDistributorAddress'
   _SOLANA_RPC_URL: 'https://api.devnet.solana.com'
   _IAO_PROGRAM_ID: 'FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA'
 
