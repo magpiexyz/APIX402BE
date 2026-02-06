@@ -13,6 +13,7 @@ export interface GraduationNotification {
   merkleRoot: string;
   virtualDistributed: string;
   totalFeesCollected: string;
+  serverSlug?: string; // Needed for Solana to derive token state PDA
 }
 
 /**

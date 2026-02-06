@@ -369,15 +369,13 @@ interface IAOTokenEntry {
  * Get IAO token entry by token address (id) from Firestore
  */
 async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | null> {
-  const addressLower = tokenAddress.toLowerCase()
-
   if (!tokenService) {
     console.error("Firestore service not configured")
     return null
   }
 
   try {
-    const dbEntry = await tokenService.getItem(addressLower)
+    const dbEntry = await tokenService.getItem(tokenAddress)
     if (dbEntry) {
       // Convert Firestore entry to IAOTokenEntry format
       const tokenEntry: IAOTokenEntry = {
@@ -394,13 +392,13 @@ async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | n
         logoUrl: dbEntry.logoUrl,
         apis: dbEntry.apis || [],
       }
-      console.log(`✅ Found IAO token in Firestore: ${addressLower} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
+      console.log(`✅ Found IAO token in Firestore: ${tokenAddress} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
       return tokenEntry
     }
-    console.log(`❌ No IAO token entry found for ${addressLower}`)
+    console.log(`❌ No IAO token entry found for ${tokenAddress}`)
     return null
   } catch (error) {
-    console.error(`Error querying Firestore for ${addressLower}:`, error)
+    console.error(`Error querying Firestore for ${tokenAddress}:`, error)
     return null
   }
 }
@@ -1328,7 +1326,7 @@ app.post('/api/register', async (req, res) => {
 
 
     // Check if token address already exists
-    const existingToken = await tokenService.getItem(tokenAddress.toLowerCase())
+    const existingToken = await tokenService.getItem(tokenAddress)
     if (existingToken) {
       return res.status(409).json({
         error: "Token already registered",
@@ -4697,7 +4695,8 @@ app.post('/internal/fix-distribution-model/:tokenAddress', async (req, res) => {
       return res.status(503).json({ error: 'Token service not initialized' })
     }
 
-    const token = await tokenService.getItem(tokenAddress.toLowerCase())
+    // normalizeAddress handles EVM lowercase vs Solana original case
+    const token = await tokenService.getItem(tokenAddress)
     if (!token) {
       return res.status(404).json({ error: 'Token not found' })
     }
@@ -4761,18 +4760,119 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
       }
 
       // Build Merkle tree from earnings
-      const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree')
-      const leaves: [string, string][] = earnings.map(e => [e.userAddress, e.totalTokensEarned])
-      const tree = StandardMerkleTree.of(leaves, ['address', 'uint256'])
-      const merkleRoot = tree.root
+      // Solana uses custom leaf hashing: keccak256(keccak256(pubkey_bytes || amount_u64_le))
+      // EVM uses StandardMerkleTree with ABI encoding
+      const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+      const isSolanaToken = solanaChains.includes(token.chainId)
+
+      let merkleRoot: string
+      let treeDump: string
+
+      if (isSolanaToken) {
+        // Solana Merkle tree — custom leaf hashing to match on-chain program
+        // IMPORTANT: Solana uses Keccak-256 (pre-NIST, same as Ethereum), NOT NIST SHA-3-256
+        const { keccak_256 } = await import('@noble/hashes/sha3')
+        const bs58 = (await import('bs58')).default
+
+        // Internal earnings are tracked in 18 decimals (EVM default).
+        // Solana tokens use 9 decimals, so divide by 10^9 for on-chain amounts.
+        const DECIMAL_SHIFT = BigInt(10 ** 9)
+        function toSolanaAmount(amount18: string): bigint {
+          return BigInt(amount18) / DECIMAL_SHIFT
+        }
+
+        // Hash leaf: keccak256(keccak256(pubkey_32bytes || amount_u64_le))
+        // Matches on-chain merkle_claim.rs verification
+        function hashLeaf(userAddress: string, solanaAmount: bigint): Buffer {
+          const pubkeyBytes = bs58.decode(userAddress)
+          const amountBuf = Buffer.alloc(8)
+          amountBuf.writeBigUInt64LE(solanaAmount)
+          const leafData = Buffer.concat([Buffer.from(pubkeyBytes), amountBuf])
+          const innerHash = keccak_256(leafData)
+          return Buffer.from(keccak_256(innerHash))
+        }
+
+        function keccak256Combine(left: Buffer, right: Buffer): Buffer {
+          const combined = Buffer.compare(left, right) <= 0
+            ? Buffer.concat([left, right])
+            : Buffer.concat([right, left])
+          return Buffer.from(keccak_256(combined))
+        }
+
+        // Sort leaves for deterministic tree
+        const sortedLeaves = earnings.map(e => {
+          const solanaAmount = toSolanaAmount(e.totalTokensEarned)
+          return {
+            address: e.userAddress,
+            amount: solanaAmount.toString(),
+            hash: hashLeaf(e.userAddress, solanaAmount),
+          }
+        }).sort((a, b) => Buffer.compare(a.hash, b.hash))
+
+        // Build tree bottom-up
+        let currentLevel = sortedLeaves.map(l => l.hash)
+        const allLevels = [currentLevel]
+        while (currentLevel.length > 1) {
+          const nextLevel: Buffer[] = []
+          for (let i = 0; i < currentLevel.length; i += 2) {
+            if (i + 1 < currentLevel.length) {
+              nextLevel.push(keccak256Combine(currentLevel[i], currentLevel[i + 1]))
+            } else {
+              nextLevel.push(currentLevel[i]) // Odd node promoted
+            }
+          }
+          currentLevel = nextLevel
+          allLevels.push(currentLevel)
+        }
+
+        merkleRoot = '0x' + currentLevel[0].toString('hex')
+
+        // Build proofs for each leaf
+        const proofs: { [address: string]: string[] } = {}
+        for (let leafIdx = 0; leafIdx < sortedLeaves.length; leafIdx++) {
+          const proof: string[] = []
+          let idx = leafIdx
+          for (let level = 0; level < allLevels.length - 1; level++) {
+            const siblingIdx = idx % 2 === 0 ? idx + 1 : idx - 1
+            if (siblingIdx < allLevels[level].length) {
+              proof.push('0x' + allLevels[level][siblingIdx].toString('hex'))
+            }
+            idx = Math.floor(idx / 2)
+          }
+          proofs[sortedLeaves[leafIdx].address] = proof
+        }
+
+        treeDump = JSON.stringify({
+          format: 'solana-keccak256',
+          root: merkleRoot,
+          leaves: sortedLeaves.map((l, i) => ({
+            address: l.address,
+            amount: l.amount, // Already converted to 9-decimal Solana format
+            hash: '0x' + l.hash.toString('hex'),
+            proof: proofs[l.address],
+          })),
+        })
+      } else {
+        // EVM Merkle tree — OpenZeppelin StandardMerkleTree
+        const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree')
+        const leaves: [string, string][] = earnings.map(e => [e.userAddress, e.totalTokensEarned])
+        const tree = StandardMerkleTree.of(leaves, ['address', 'uint256'])
+        merkleRoot = tree.root
+        treeDump = JSON.stringify(tree.dump())
+      }
 
       console.log(`🌳 Merkle tree built for ${tokenAddress}: ${earnings.length} leaves, root: ${merkleRoot}`)
 
       // Store Merkle tree in Firestore
-      const totalTokens = earnings.reduce(
+      // For Solana, convert amounts from 18-decimal (internal) to 9-decimal (on-chain)
+      const SOLANA_SHIFT = BigInt(10 ** 9)
+      const totalTokens18 = earnings.reduce(
         (sum, e) => sum + BigInt(e.totalTokensEarned),
         BigInt(0)
-      ).toString()
+      )
+      const totalTokens = isSolanaToken
+        ? (totalTokens18 / SOLANA_SHIFT).toString()
+        : totalTokens18.toString()
 
       await merkleTreeService.storeMerkleTree(tokenAddress, {
         merkleRoot,
@@ -4780,30 +4880,40 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
         totalTokens,
         leaves: earnings.map((e, i) => ({
           address: e.userAddress,
-          amount: e.totalTokensEarned,
+          amount: isSolanaToken
+            ? (BigInt(e.totalTokensEarned) / SOLANA_SHIFT).toString()
+            : e.totalTokensEarned,
           index: i,
         })),
-        treeDump: JSON.stringify(tree.dump()),
+        treeDump,
         generatedAt: new Date().toISOString(),
         chainId: token.chainId,
       })
 
       // Set merkleRoot on token entry (graduated stays false until Cloud Function confirms)
+      const normalizedTokenAddr = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
       const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
         .collection('iao-tokens')
-        .doc(tokenAddress.toLowerCase())
+        .doc(normalizedTokenAddr)
       await docRef.update({
         merkleRoot,
         updatedAt: new Date().toISOString(),
       })
 
       // Notify Cloud Function for on-chain graduation TX
+      // For Solana, convert virtualDistributed from 18-decimal to 9-decimal (u64-safe)
+      const virtualDistributed = token.virtualTokensDistributed || "0"
+      const virtualDistributedForChain = isSolanaToken
+        ? (BigInt(virtualDistributed) / SOLANA_SHIFT).toString()
+        : virtualDistributed
+
       await notifyForGraduation({
         tokenAddress,
         chainId: token.chainId,
         merkleRoot,
-        virtualDistributed: token.virtualTokensDistributed || "0",
+        virtualDistributed: virtualDistributedForChain,
         totalFeesCollected: token.totalFeesCollected || "0",
+        serverSlug: token.slug,
       })
 
       await releaseGraduationLock(tokenAddress)
@@ -4847,9 +4957,10 @@ app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
 
     const { txHash } = req.body || {}
 
+    const normalizedAddr = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
     const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
       .collection('iao-tokens')
-      .doc(tokenAddress.toLowerCase())
+      .doc(normalizedAddr)
 
     await docRef.update({
       graduated: true,
@@ -4927,8 +5038,8 @@ app.post('/internal/seed-test-data/:tokenAddress', async (req, res) => {
       return res.status(400).json({ error: 'userAddress and tokensEarned are required' })
     }
 
-    const normalizedToken = tokenAddress.toLowerCase()
-    const normalizedUser = userAddress.toLowerCase()
+    const normalizedToken = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
+    const normalizedUser = userAddress.startsWith('0x') ? userAddress.toLowerCase() : userAddress
 
     // Get token to verify it exists
     const token = await tokenService.getItem(normalizedToken)
@@ -5127,7 +5238,7 @@ app.post('/internal/fee-distribution-confirm', async (req, res) => {
     const now = new Date().toISOString()
 
     for (const tokenAddress of tokens) {
-      const docRef = db.collection('iao-tokens').doc(tokenAddress.toLowerCase())
+      const docRef = db.collection('iao-tokens').doc(tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress)
       batch.update(docRef, {
         pendingFeesForDistribution: '0',
         lastFeeDistributionAt: timestamp || now,

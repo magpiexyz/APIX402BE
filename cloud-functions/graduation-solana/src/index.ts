@@ -33,11 +33,12 @@ import bs58 from 'bs58';
 
 interface GraduationEvent {
   action: string;
-  tokenAddress: string;
+  tokenAddress: string; // Mint address (stored in Firestore)
   chainId: string;
   merkleRoot: string;
   virtualDistributed: string;
   totalFeesCollected: string;
+  serverSlug?: string; // Used to derive token state PDA
 }
 
 function getProgramId(): PublicKey {
@@ -48,6 +49,13 @@ function getProgramId(): PublicKey {
 
 function deriveFactoryStatePDA(programId: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([Buffer.from('factory')], programId);
+}
+
+function deriveTokenStatePDA(serverSlug: string, programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('iao-token'), Buffer.from(serverSlug)],
+    programId,
+  );
 }
 
 function deriveMintAuthorityPDA(tokenStatePubkey: PublicKey, programId: PublicKey): [PublicKey, number] {
@@ -265,7 +273,7 @@ export const graduateSolana: HttpFunction = async (req, res) => {
     return;
   }
 
-  const { tokenAddress, merkleRoot, virtualDistributed, totalFeesCollected } = event;
+  const { tokenAddress, merkleRoot, virtualDistributed, totalFeesCollected, serverSlug: slugFromEvent } = event;
 
   const privateKey = process.env.AUTOMATION_PRIVATE_KEY;
   const rpcUrl = process.env.SOLANA_RPC_URL;
@@ -278,6 +286,12 @@ export const graduateSolana: HttpFunction = async (req, res) => {
     return;
   }
 
+  if (!slugFromEvent) {
+    console.error('Missing serverSlug in graduation event');
+    res.status(400).json({ error: 'Missing serverSlug — needed to derive token state PDA' });
+    return;
+  }
+
   try {
     const connection = new Connection(rpcUrl, 'confirmed');
     const automationWallet = Keypair.fromSecretKey(bs58.decode(privateKey));
@@ -286,11 +300,15 @@ export const graduateSolana: HttpFunction = async (req, res) => {
     // Derive factory PDA
     const [factoryState] = deriveFactoryStatePDA(programId);
 
-    // Fetch and decode token state
-    const tokenStatePubkey = new PublicKey(tokenAddress);
+    // Derive token state PDA from server slug
+    // NOTE: tokenAddress from Firestore is the mint address, NOT the token state PDA.
+    // The token state PDA is derived from ["iao-token", serverSlug].
+    const [tokenStatePubkey] = deriveTokenStatePDA(slugFromEvent, programId);
+    console.log(`Derived token state PDA: ${tokenStatePubkey.toBase58()} (from slug: ${slugFromEvent})`);
+
     const tokenStateInfo = await connection.getAccountInfo(tokenStatePubkey);
     if (!tokenStateInfo) {
-      throw new Error(`Token state account not found: ${tokenAddress}`);
+      throw new Error(`Token state account not found for slug "${slugFromEvent}" (PDA: ${tokenStatePubkey.toBase58()})`);
     }
 
     const { serverSlug, mint, builder } = decodeTokenState(tokenStateInfo.data);

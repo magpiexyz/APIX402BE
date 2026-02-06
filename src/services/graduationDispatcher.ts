@@ -42,7 +42,7 @@ export async function dispatchGraduationTask(payload: GraduationTaskPayload): Pr
 
   const client = getTasksClient();
   const parent = client.queuePath(projectId, queueLocation, queueName);
-  const taskName = `${parent}/tasks/graduate-${payload.tokenAddress.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+  const taskName = `${parent}/tasks/graduate-${payload.tokenAddress.replace(/[^a-zA-Z0-9]/g, '-')}`;
 
   const url = `${serviceUrl}/internal/graduate/${payload.tokenAddress}`;
 

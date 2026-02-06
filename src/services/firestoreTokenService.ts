@@ -436,7 +436,7 @@ class TokenService {
     feePaid: string
   ): Promise<{ newTotal: string; actualTokensCredited: string; chainId: string; graduated: boolean; totalFeesCollected: string }> {
     const normalizedToken = normalizeAddress(tokenAddress);
-    const normalizedUser = userAddress.toLowerCase();
+    const normalizedUser = normalizeAddress(userAddress);
     const earningsDocId = `${normalizedToken}#${normalizedUser}`;
 
     try {

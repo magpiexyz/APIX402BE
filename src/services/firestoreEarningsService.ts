@@ -26,6 +26,16 @@ export interface TokenEarningEntry {
   updatedAt: string;            // ISO timestamp
 }
 
+/**
+ * Normalize address: lowercase for EVM (0x...), preserve case for Solana (base58)
+ */
+function normalizeAddress(address: string): string {
+  if (address.startsWith('0x')) {
+    return address.toLowerCase();
+  }
+  return address; // Solana addresses - keep original case
+}
+
 export class EarningsService {
   private firestore: Firestore;
   private collectionName: string;
@@ -39,7 +49,7 @@ export class EarningsService {
    * Build document ID from token and user addresses
    */
   private buildDocId(tokenAddress: string, userAddress: string): string {
-    return `${tokenAddress.toLowerCase()}#${userAddress.toLowerCase()}`;
+    return `${normalizeAddress(tokenAddress)}#${normalizeAddress(userAddress)}`;
   }
 
   /**
@@ -63,8 +73,8 @@ export class EarningsService {
         // Create new entry
         const entry: TokenEarningEntry = {
           id: docId,
-          tokenAddress: tokenAddress.toLowerCase(),
-          userAddress: userAddress.toLowerCase(),
+          tokenAddress: normalizeAddress(tokenAddress),
+          userAddress: normalizeAddress(userAddress),
           totalTokensEarned: tokensEarned,
           totalFeesPaid: feePaid,
           callCount: "1",
@@ -104,7 +114,7 @@ export class EarningsService {
     try {
       const snapshot = await this.firestore
         .collection(this.collectionName)
-        .where('tokenAddress', '==', tokenAddress.toLowerCase())
+        .where('tokenAddress', '==', normalizeAddress(tokenAddress))
         .get();
 
       return snapshot.docs.map(doc => doc.data() as TokenEarningEntry);
@@ -121,7 +131,7 @@ export class EarningsService {
     try {
       const snapshot = await this.firestore
         .collection(this.collectionName)
-        .where('userAddress', '==', userAddress.toLowerCase())
+        .where('userAddress', '==', normalizeAddress(userAddress))
         .get();
 
       return snapshot.docs.map(doc => doc.data() as TokenEarningEntry);
