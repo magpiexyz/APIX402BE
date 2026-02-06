@@ -21,7 +21,7 @@
   </style>
 </head>
 <body>
-  <h1>AI Agent Chat Flow</h1>
+  <h1>AI Agent Chat Flow (Multi-Chain)</h1>
   <div class="mermaid">
 sequenceDiagram
     participant U as User
@@ -37,9 +37,9 @@ sequenceDiagram
     B->>F: 5. Return agent info
 
     U->>F: 6. Send message
-    F->>B: 7. POST /api/chat/message<br/>+ payment signature
+    F->>B: 7. POST /api/chat/message<br/>+ payment signature<br/>(EVM: EIP-3009, Solana: SPL tx)
 
-    B->>B: 8. Verify payment
+    B->>B: 8. Verify payment<br/>(chain-aware verification)
     B->>DB: 9. Get/create session
     B->>DB: 10. Load chat history
 
@@ -48,10 +48,16 @@ sequenceDiagram
 
     B->>DB: 13. Save user message
     B->>DB: 14. Save AI response
-    B->>B: 15. Settle payment
 
-    B->>F: 16. Stream response
-    F->>U: 17. Display message
+    alt EVM Payment
+        B->>B: 15a. settlePayment via Thirdweb
+    else Solana Payment
+        B->>B: 15b. sendRawTransaction<br/>+ track virtual earnings
+    end
+
+    B->>DB: 16. Update agent-payments<br/>+ api-metrics
+    B->>F: 17. Stream response
+    F->>U: 18. Display message
   </div>
   <script>
     mermaid.initialize({

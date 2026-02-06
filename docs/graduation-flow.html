@@ -21,54 +21,100 @@
   </style>
 </head>
 <body>
-  <h1>Token Graduation Flow (625M Threshold)</h1>
+  <h1>Token Graduation Flow (Multi-Chain)</h1>
   <div class="mermaid">
 flowchart TD
-    subgraph BONDING["<b>Bonding Curve Phase</b>"]
-        A["API Payment Received"] --> B["Calculate token amount"]
-        B --> C["Mint tokens to user"]
-        C --> D["Update totalTokensDistributed"]
-        D --> E{"totalDistributed >= 625M?"}
+    subgraph BONDING["<b>Bonding Curve Phase (Both Chains)</b>"]
+        A["API Payment Received"] --> B["Track earnings +<br/>virtual token distribution"]
+        B --> C["Atomic increment:<br/>virtualTokensDistributed<br/>+ pendingFeesForDistribution"]
+        C --> D{"virtualDistributed<br/>>= threshold?"}
     end
 
-    E -->|No| F["Continue bonding curve"]
-    F --> G["Distribute fees"]
-    G --> A
+    D -->|No| E["Continue bonding curve"]
+    E --> A
 
-    E -->|Yes| H["<b>GRADUATION TRIGGERED</b>"]
+    D -->|Yes| F["<b>GRADUATION TRIGGERED</b>"]
+    F --> F2["GraduationDispatcher creates<br/>Cloud Task (deduped by name)"]
+    F2 --> F3["POST /internal/graduate/:tokenAddress"]
+    F3 --> F4["Acquire graduation lock<br/>(race condition protection)"]
+    F4 --> F5["Fetch all user earnings<br/>from Firestore"]
+    F5 --> F6["Build Merkle tree<br/>(Keccak-256 hashing)"]
 
-    subgraph GRAD["<b>Graduation Process</b>"]
-        H --> I["Transfer remaining tokens<br/>from builder to contract"]
-        I --> J["Calculate liquidity amounts<br/>(50% fees + unsold tokens)"]
-        J --> K["Deploy LpGuardHook"]
-        K --> L["Create Uniswap V4 Pool"]
-        L --> M["Add initial liquidity"]
-        M --> N["Set liquidityDeployed = true"]
+    F6 --> G{"Which chain?"}
+
+    subgraph EVM_GRAD["<b>EVM Graduation (Base)</b>"]
+        G -->|EVM| H1["GraduationNotifier routes to<br/>graduation-evm Cloud Function"]
+        H1 --> H2["TokenDistributor.<br/>graduateTokenWithMerkle()<br/>(merkleRoot, virtualDistributed,<br/>totalFeesCollected)"]
+        H2 --> H3["Deploy LpGuardHook"]
+        H3 --> H4["Create Uniswap V4 Pool"]
+        H4 --> H5["Add initial liquidity<br/>(50% fees + unsold tokens)"]
+        H5 --> H6["distributeFees() for<br/>remaining collected fees"]
     end
 
-    subgraph POST["<b>Post-Graduation</b>"]
-        N --> O["Token tradeable on Uniswap"]
-        O --> P["LP locked via LpGuardHook"]
-        P --> Q["New fee split: 70/10/20"]
+    subgraph SOL_GRAD["<b>Solana Graduation</b>"]
+        G -->|Solana| S1["GraduationNotifier routes to<br/>graduation-solana Cloud Function"]
+        S1 --> S2["Convert decimals<br/>(18 int &rarr; 9 on-chain)"]
+        S2 --> S3["Derive PDAs:<br/>FactoryState, TokenState"]
+        S3 --> S4["Call graduate_with_merkle<br/>(merkleRoot, virtualDistributed,<br/>totalFeesCollected)"]
+        S4 --> S5["Mark token graduated on-chain"]
+        S5 --> S6["Derive fee PDAs + ATAs:<br/>Vault, Builder, Team, Buyback"]
+        S6 --> S7["Call distribute_fees<br/>for accumulated fees"]
+    end
+
+    subgraph CONFIRM["<b>Confirmation Callback</b>"]
+        H6 --> CF["POST /internal/graduation-confirm/:tokenAddress"]
+        S7 --> CF
+        CF --> CG["Set graduated = true<br/>in Firestore"]
+        CG --> CH["Fee split changes to 70/10/20"]
+    end
+
+    subgraph EVM_POST["<b>EVM Post-Graduation</b>"]
+        CH --> EP1["Trade on Uniswap V4"]
+        EP1 --> EP2["LP locked via LpGuardHook"]
+    end
+
+    subgraph SOL_POST["<b>Solana Post-Graduation</b>"]
+        CH --> SP1["Users call claim_tokens<br/>with Merkle proof"]
+        SP1 --> SP2["On-chain verification:<br/>keccak256(keccak256(pubkey || amount))"]
+        SP2 --> SP3["SPL tokens minted to user"]
     end
 
     style A fill:#7c3aed,stroke:#a78bfa,color:#fff
     style B fill:#7c3aed,stroke:#a78bfa,color:#fff
     style C fill:#7c3aed,stroke:#a78bfa,color:#fff
-    style D fill:#7c3aed,stroke:#a78bfa,color:#fff
-    style E fill:#d97706,stroke:#fbbf24,color:#fff
-    style F fill:#059669,stroke:#34d399,color:#fff
-    style G fill:#059669,stroke:#34d399,color:#fff
-    style H fill:#dc2626,stroke:#f87171,color:#fff
-    style I fill:#dc2626,stroke:#f87171,color:#fff
-    style J fill:#dc2626,stroke:#f87171,color:#fff
-    style K fill:#dc2626,stroke:#f87171,color:#fff
-    style L fill:#dc2626,stroke:#f87171,color:#fff
-    style M fill:#dc2626,stroke:#f87171,color:#fff
-    style N fill:#dc2626,stroke:#f87171,color:#fff
-    style O fill:#0891b2,stroke:#22d3ee,color:#fff
-    style P fill:#0891b2,stroke:#22d3ee,color:#fff
-    style Q fill:#0891b2,stroke:#22d3ee,color:#fff
+    style D fill:#d97706,stroke:#fbbf24,color:#fff
+    style E fill:#059669,stroke:#34d399,color:#fff
+    style F fill:#dc2626,stroke:#f87171,color:#fff
+    style F2 fill:#dc2626,stroke:#f87171,color:#fff
+    style F3 fill:#dc2626,stroke:#f87171,color:#fff
+    style F4 fill:#dc2626,stroke:#f87171,color:#fff
+    style F5 fill:#dc2626,stroke:#f87171,color:#fff
+    style F6 fill:#dc2626,stroke:#f87171,color:#fff
+    style G fill:#d97706,stroke:#fbbf24,color:#fff
+
+    style H1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style H2 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style H3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style H4 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style H5 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style H6 fill:#0891b2,stroke:#22d3ee,color:#fff
+
+    style S1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S5 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S6 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S7 fill:#9333ea,stroke:#c084fc,color:#fff
+
+    style CF fill:#059669,stroke:#34d399,color:#fff
+    style CG fill:#059669,stroke:#34d399,color:#fff
+    style CH fill:#059669,stroke:#34d399,color:#fff
+    style EP1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style EP2 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style SP1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SP2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SP3 fill:#9333ea,stroke:#c084fc,color:#fff
   </div>
   <script>
     mermaid.initialize({

@@ -89,35 +89,35 @@
 <body>
   <div class="container">
     <h1>IAO Flow Documentation</h1>
-    <p class="subtitle">Interactive diagrams for the Initial API Offering system</p>
+    <p class="subtitle">Interactive diagrams for the Initial API Offering system (EVM + Solana)</p>
 
     <div class="section-title">Core Flows</div>
     <div class="cards">
       <a href="token-creation-flow.html" class="card">
         <div class="icon">🏭</div>
         <h2>Token Creation</h2>
-        <p>Server registration and IAO token creation via IAOTokenFactory smart contract.</p>
+        <p>Server registration and IAO token creation via IAOTokenFactory (EVM) or Anchor program (Solana).</p>
         <span class="badge badge-sequence">Sequence</span>
       </a>
 
       <a href="token-distribution-flow.html" class="card">
         <div class="icon">💰</div>
         <h2>Token Distribution</h2>
-        <p>Payment processing, automation batching, on-chain minting, and fee distribution.</p>
+        <p>Multi-chain payment processing: EVM batchMint vs Solana virtual distribution with Merkle claims.</p>
         <span class="badge badge-flowchart">Flowchart</span>
       </a>
 
       <a href="api-call-flow.html" class="card">
         <div class="icon">🔌</div>
-        <h2>API Call (x402)</h2>
-        <p>How users pay for API calls using EIP-3009 signatures and the x402 protocol.</p>
+        <h2>API Call</h2>
+        <p>How users pay for API calls: EVM via x402/EIP-3009, Solana via SPL token transfers.</p>
         <span class="badge badge-sequence">Sequence</span>
       </a>
 
       <a href="graduation-flow.html" class="card">
         <div class="icon">🎓</div>
         <h2>Graduation</h2>
-        <p>What happens when 625M tokens are distributed - Uniswap V4 liquidity deployment.</p>
+        <p>Threshold reached: EVM deploys Uniswap V4 liquidity, Solana uses Merkle-based token claims.</p>
         <span class="badge badge-flowchart">Flowchart</span>
       </a>
     </div>
@@ -141,7 +141,7 @@
       <a href="fee-distribution-flow.html" class="card">
         <div class="icon">💸</div>
         <h2>Fee Distribution</h2>
-        <p>How fees are split: 40% builder, 10% team, 50% liquidity reserve.</p>
+        <p>Multi-chain fee routing: EVM batched via TokenDistributor, Solana per-token via program PDAs.</p>
         <span class="badge badge-flowchart">Flowchart</span>
       </a>
     </div>
@@ -151,7 +151,7 @@
       <a href="system-architecture.html" class="card">
         <div class="icon">🏗️</div>
         <h2>System Architecture</h2>
-        <p>Overview of all components: Frontend, Backend, Database, Blockchain, and External services.</p>
+        <p>Multi-chain overview: Frontend, Backend, Cloud Functions, Firestore, EVM + Solana blockchains.</p>
         <span class="badge badge-architecture">Architecture</span>
       </a>
     </div>

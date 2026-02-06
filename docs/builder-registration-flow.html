@@ -21,39 +21,60 @@
   </style>
 </head>
 <body>
-  <h1>Builder API Registration Flow</h1>
+  <h1>Builder API Registration Flow (Multi-Chain)</h1>
   <div class="mermaid">
 flowchart TD
     subgraph VALIDATE["<b>Step 1: Validation</b>"]
-        A["Builder fills form"] --> B["Submit without tokenAddress"]
+        A["Builder fills form<br/>(selects chain: EVM or Solana)"] --> B["Submit without tokenAddress"]
         B --> C["Backend validates:"]
-        C --> D["- Slug available?"]
+        C --> D["- Slug available? (3-30 chars)"]
         D --> E["- API URLs return 200?"]
-        E --> F["- No duplicate APIs?"]
-        F --> G{"All valid?"}
+        E --> F["- No duplicate API slugs?"]
+        F --> FA{"Which chain?"}
     end
 
+    subgraph ADDR_VAL["<b>Address Validation</b>"]
+        FA -->|EVM| AV1["Validate 0x... address format"]
+        FA -->|Solana| AV2["Validate base58 address<br/>(32-44 chars, case-sensitive)"]
+        AV1 --> G
+        AV2 --> G
+    end
+
+    G{"All valid?"}
     G -->|No| H["Return errors"]
     H --> A
 
     G -->|Yes| I["Return validation OK"]
+    I --> CHAIN{"Which chain?"}
 
-    subgraph ONCHAIN["<b>Step 2: On-Chain</b>"]
-        I --> J["Frontend calls wallet"]
-        J --> K["IAOTokenFactory.createToken()"]
-        K --> L["Factory validates params"]
-        L --> M["Clone IAOToken"]
-        M --> N["Initialize token"]
-        N --> O["Mint 1B to builder"]
-        O --> P["Emit TokenCreated"]
-        P --> Q["Return tokenAddress"]
+    subgraph EVM_ONCHAIN["<b>Step 2a: EVM On-Chain</b>"]
+        CHAIN -->|EVM| J1["Frontend calls wallet"]
+        J1 --> J2["IAOTokenFactory.createToken()"]
+        J2 --> J3["Factory validates params"]
+        J3 --> J4["Clone IAOToken (ERC-20)"]
+        J4 --> J5["Mint 1B tokens to builder"]
+        J5 --> J6["Return tokenAddress (0x...)"]
     end
 
-    subgraph REGISTER["<b>Step 3: Registration</b>"]
-        Q --> R["Frontend submits with tokenAddress"]
-        R --> S["Backend stores in Firestore"]
-        S --> T["iao-tokens collection"]
-        T --> U["Registration complete!"]
+    subgraph SOL_ONCHAIN["<b>Step 2b: Solana On-Chain</b>"]
+        CHAIN -->|Solana| S1["Frontend calls wallet"]
+        S1 --> S2["IAO Program: initialize_token"]
+        S2 --> S3["Derive PDAs from slug"]
+        S3 --> S4["Create SPL mint (9 decimals)"]
+        S4 --> S5["Create vault for USDC"]
+        S5 --> S6["Return mint PDA (base58)"]
+    end
+
+    subgraph REGISTER["<b>Step 3: Backend Registration</b>"]
+        J6 --> R1["Frontend submits with tokenAddress"]
+        S6 --> R1
+        R1 --> R2{"Chain type?"}
+        R2 -->|EVM| R3["normalizeAddress:<br/>addr.toLowerCase()"]
+        R2 -->|Solana| R4["normalizeAddress:<br/>preserve case (base58)"]
+        R3 --> R5["Store in Firestore iao-tokens"]
+        R4 --> R5
+        R5 --> R6["Set distributionModel: merkle"]
+        R6 --> R7["Registration complete!"]
     end
 
     style A fill:#7c3aed,stroke:#a78bfa,color:#fff
@@ -62,21 +83,32 @@ flowchart TD
     style D fill:#7c3aed,stroke:#a78bfa,color:#fff
     style E fill:#7c3aed,stroke:#a78bfa,color:#fff
     style F fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style FA fill:#d97706,stroke:#fbbf24,color:#fff
+    style AV1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style AV2 fill:#9333ea,stroke:#c084fc,color:#fff
     style G fill:#d97706,stroke:#fbbf24,color:#fff
     style H fill:#dc2626,stroke:#f87171,color:#fff
     style I fill:#059669,stroke:#34d399,color:#fff
-    style J fill:#0891b2,stroke:#22d3ee,color:#fff
-    style K fill:#0891b2,stroke:#22d3ee,color:#fff
-    style L fill:#0891b2,stroke:#22d3ee,color:#fff
-    style M fill:#0891b2,stroke:#22d3ee,color:#fff
-    style N fill:#0891b2,stroke:#22d3ee,color:#fff
-    style O fill:#0891b2,stroke:#22d3ee,color:#fff
-    style P fill:#0891b2,stroke:#22d3ee,color:#fff
-    style Q fill:#0891b2,stroke:#22d3ee,color:#fff
-    style R fill:#ec4899,stroke:#f472b6,color:#fff
-    style S fill:#ec4899,stroke:#f472b6,color:#fff
-    style T fill:#ec4899,stroke:#f472b6,color:#fff
-    style U fill:#059669,stroke:#34d399,color:#fff
+    style CHAIN fill:#d97706,stroke:#fbbf24,color:#fff
+    style J1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style J2 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style J3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style J4 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style J5 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style J6 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style S1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S5 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S6 fill:#9333ea,stroke:#c084fc,color:#fff
+    style R1 fill:#ec4899,stroke:#f472b6,color:#fff
+    style R2 fill:#d97706,stroke:#fbbf24,color:#fff
+    style R3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style R4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style R5 fill:#ec4899,stroke:#f472b6,color:#fff
+    style R6 fill:#ec4899,stroke:#f472b6,color:#fff
+    style R7 fill:#059669,stroke:#34d399,color:#fff
   </div>
   <script>
     mermaid.initialize({

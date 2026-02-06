@@ -21,65 +21,89 @@
   </style>
 </head>
 <body>
-  <h1>Fee Distribution Flow</h1>
+  <h1>Fee Distribution Flow (Multi-Chain)</h1>
   <div class="mermaid">
 flowchart TD
-    subgraph PAYMENT["<b>Payment Received</b>"]
-        A["User pays API fee<br/>(e.g., 1 USDC)"] --> B["Payment settled<br/>via Thirdweb"]
-        B --> C["USDC transferred<br/>to IAOToken"]
+    subgraph COLLECT["<b>Fee Collection (Both Chains)</b>"]
+        A["User pays API fee<br/>(e.g., 1 USDC)"] --> B["Payment settled"]
+        B --> C["Firestore atomic increment:<br/>totalFeesCollected<br/>pendingFeesForDistribution"]
     end
 
-    C --> D{"Token graduated?"}
+    C --> D["POST /internal/trigger-fee-distribution<br/>(weekly or on graduation)"]
+    D --> D2["Query all tokens with<br/>pendingFees > 0"]
+    D2 --> D3{"Route by chainId"}
 
-    subgraph PREBOND["<b>Pre-Graduation Fee Split</b>"]
-        D -->|No| E["Split fee:"]
-        E --> F["40% → Builder wallet"]
-        E --> G["10% → Team wallet"]
-        E --> H["50% → Liquidity reserve<br/>(stays in contract)"]
+    subgraph EVM_PATH["<b>EVM Fee Distribution (Base)</b>"]
+        D3 -->|"chainId: 84532"| E1["Batch all EVM tokens"]
+        E1 --> E2["Cloud Function:<br/>fee-distribution-evm"]
+        E2 --> E3["TokenDistributor.distributeFees()<br/>(batched, single tx)"]
+        E3 --> E4["Thirdweb settles<br/>USDC transfers"]
     end
 
-    subgraph POSTGRAD["<b>Post-Graduation Fee Split</b>"]
-        D -->|Yes| I["Split fee:"]
-        I --> J["70% → Builder wallet"]
-        I --> K["10% → Team wallet"]
-        I --> L["20% → Buyback"]
+    subgraph SOL_PATH["<b>Solana Fee Distribution</b>"]
+        D3 -->|"chainId: devnet/mainnet-beta"| S1["Group Solana tokens"]
+        S1 --> S2["Cloud Function:<br/>fee-distribution-solana"]
+        S2 --> S3["For each token:"]
+        S3 --> S4["Derive PDAs:<br/>FactoryState, FeeConfig,<br/>Vault, VaultAuthority"]
+        S4 --> S5["Derive ATAs:<br/>Builder USDC, Team USDC,<br/>Buyback USDC (optional)"]
+        S5 --> S6["Call distribute_fees<br/>instruction per token"]
+        S6 --> S7["Program splits USDC<br/>from Vault PDA to ATAs"]
     end
 
-    subgraph PRE_EXAMPLE["<b>Pre-Grad Example (1 USDC)</b>"]
-        M["1 USDC Payment"] --> N["0.40 USDC → Builder"]
-        M --> O["0.10 USDC → Team"]
-        M --> P["0.50 USDC → LP Reserve"]
+    subgraph CONFIRM["<b>Confirmation Callback</b>"]
+        E4 --> CF["POST /internal/fee-distribution-confirm"]
+        S7 --> CF
+        CF --> CG["Reset pendingFeesForDistribution = 0"]
+        CG --> CH["Set lastFeeDistributionAt<br/>+ lastFeeDistributionTxHash"]
     end
 
-    subgraph POST_EXAMPLE["<b>Post-Grad Example (1 USDC)</b>"]
-        Q["1 USDC Payment"] --> R["0.70 USDC → Builder"]
-        Q --> S["0.10 USDC → Team"]
-        Q --> T["0.20 USDC → Buyback"]
+    subgraph SPLIT_PRE["<b>Pre-Graduation Fee Split (Both Chains)</b>"]
+        SP1["Fee Payment"] --> SP2["40% &rarr; Builder wallet"]
+        SP1 --> SP3["10% &rarr; Team wallet"]
+        SP1 --> SP4["50% &rarr; Liquidity reserve<br/>(stays in contract/vault)"]
     end
 
-    H --> U["Used at graduation<br/>for Uniswap V4 LP"]
-    L --> V["Token buyback<br/>& burn/redistribute"]
+    subgraph SPLIT_POST["<b>Post-Graduation Fee Split (Both Chains)</b>"]
+        SQ1["Fee Payment"] --> SQ2["70% &rarr; Builder wallet"]
+        SQ1 --> SQ3["10% &rarr; Team wallet"]
+        SQ1 --> SQ4["20% &rarr; Buyback"]
+    end
+
+    SP4 --> U["EVM: Uniswap V4 LP<br/>Solana: Liquidity reserve"]
+    SQ4 --> V["Token buyback<br/>& burn/redistribute"]
 
     style A fill:#7c3aed,stroke:#a78bfa,color:#fff
     style B fill:#7c3aed,stroke:#a78bfa,color:#fff
     style C fill:#7c3aed,stroke:#a78bfa,color:#fff
-    style D fill:#d97706,stroke:#fbbf24,color:#fff
-    style E fill:#059669,stroke:#34d399,color:#fff
-    style F fill:#ec4899,stroke:#f472b6,color:#fff
-    style G fill:#ec4899,stroke:#f472b6,color:#fff
-    style H fill:#ec4899,stroke:#f472b6,color:#fff
-    style I fill:#0891b2,stroke:#22d3ee,color:#fff
-    style J fill:#0891b2,stroke:#22d3ee,color:#fff
-    style K fill:#0891b2,stroke:#22d3ee,color:#fff
-    style L fill:#0891b2,stroke:#22d3ee,color:#fff
-    style M fill:#475569,stroke:#64748b,color:#fff
-    style N fill:#475569,stroke:#64748b,color:#fff
-    style O fill:#475569,stroke:#64748b,color:#fff
-    style P fill:#475569,stroke:#64748b,color:#fff
-    style Q fill:#475569,stroke:#64748b,color:#fff
-    style R fill:#475569,stroke:#64748b,color:#fff
-    style S fill:#475569,stroke:#64748b,color:#fff
-    style T fill:#475569,stroke:#64748b,color:#fff
+    style D fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style D2 fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style D3 fill:#d97706,stroke:#fbbf24,color:#fff
+
+    style E1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style E2 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style E3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style E4 fill:#0891b2,stroke:#22d3ee,color:#fff
+
+    style S1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S5 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S6 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S7 fill:#9333ea,stroke:#c084fc,color:#fff
+
+    style CF fill:#059669,stroke:#34d399,color:#fff
+    style CG fill:#059669,stroke:#34d399,color:#fff
+    style CH fill:#059669,stroke:#34d399,color:#fff
+
+    style SP1 fill:#475569,stroke:#64748b,color:#fff
+    style SP2 fill:#ec4899,stroke:#f472b6,color:#fff
+    style SP3 fill:#ec4899,stroke:#f472b6,color:#fff
+    style SP4 fill:#ec4899,stroke:#f472b6,color:#fff
+    style SQ1 fill:#475569,stroke:#64748b,color:#fff
+    style SQ2 fill:#ec4899,stroke:#f472b6,color:#fff
+    style SQ3 fill:#ec4899,stroke:#f472b6,color:#fff
+    style SQ4 fill:#ec4899,stroke:#f472b6,color:#fff
     style U fill:#059669,stroke:#34d399,color:#fff
     style V fill:#059669,stroke:#34d399,color:#fff
   </div>

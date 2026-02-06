@@ -21,7 +21,7 @@
   </style>
 </head>
 <body>
-  <h1>IAO System Architecture</h1>
+  <h1>IAO System Architecture (Multi-Chain)</h1>
   <div class="mermaid">
 flowchart TB
     subgraph USERS["<b>Users</b>"]
@@ -31,34 +31,49 @@ flowchart TB
 
     subgraph FRONTEND["<b>Frontend (Firebase Hosting)</b>"]
         F1["React SPA"]
-        F2["Thirdweb SDK"]
-        F3["Wallet Connect"]
+        F2["Thirdweb SDK (EVM)"]
+        F3["Solana Wallet Adapter"]
+        F4["Wallet Connect"]
     end
 
     subgraph BACKEND["<b>Backend (Cloud Run)</b>"]
         B1["Express.js Proxy"]
-        B2["Payment Verification"]
+        B2["Payment Verification<br/>(EVM + Solana)"]
         B3["JWT Auth"]
         B4["Metrics Service"]
+        B5["Graduation Dispatcher<br/>(multi-chain routing)"]
+    end
+
+    subgraph CLOUD_FN["<b>Cloud Functions</b>"]
+        CF1["fee-distribution-evm"]
+        CF2["fee-distribution-solana"]
+        CF3["graduation-evm"]
+        CF4["graduation-solana"]
     end
 
     subgraph DATABASE["<b>Database (Firestore)</b>"]
-        D1["iao-tokens"]
+        D1["iao-tokens<br/>(+ chainId, pendingFees)"]
         D2["request-queue"]
         D3["chat-sessions"]
         D4["api-metrics"]
+        D5["chain-configs"]
+        D6["user-earnings"]
     end
 
-    subgraph AUTOMATION["<b>Automation (Cloud Run)</b>"]
-        A1["Queue Poller"]
-        A2["Batch Processor"]
-    end
-
-    subgraph BLOCKCHAIN["<b>Blockchain (Base)</b>"]
+    subgraph EVM_CHAIN["<b>EVM Blockchain (Base)</b>"]
         C1["IAOTokenFactory"]
         C2["IAOToken"]
-        C3["Uniswap V4"]
-        C4["LpGuardHook"]
+        C3["TokenDistributor"]
+        C4["Uniswap V4"]
+        C5["LpGuardHook"]
+    end
+
+    subgraph SOL_CHAIN["<b>Solana Blockchain</b>"]
+        SC1["IAO Program<br/>(Anchor)"]
+        SC2["Token State PDAs"]
+        SC3["Vault PDAs<br/>(USDC)"]
+        SC4["Fee Config PDA"]
+        SC5["SPL Token 2022"]
     end
 
     subgraph EXTERNAL["<b>External Services</b>"]
@@ -70,18 +85,23 @@ flowchart TB
     U1 --> F1
     U2 --> F1
     F1 --> F2
-    F2 --> F3
-    F3 --> C1
+    F1 --> F3
+    F2 --> F4
+    F4 --> C1
+    F3 --> SC1
 
     F1 --> B1
     B1 --> B2
     B1 --> B3
     B1 --> B4
+    B1 --> B5
 
     B1 --> D1
     B1 --> D2
     B1 --> D3
     B4 --> D4
+    B5 --> D5
+    B5 --> D6
 
     B2 --> E2
     B1 --> E1
@@ -89,31 +109,55 @@ flowchart TB
 
     E2 --> C2
 
-    A1 --> D2
-    A2 --> C2
+    B5 --> CF1
+    B5 --> CF2
+    B5 --> CF3
+    B5 --> CF4
 
-    C2 --> C3
-    C3 --> C4
+    CF1 --> C3
+    CF3 --> C3
+    CF2 --> SC1
+    CF4 --> SC1
+
+    C2 --> C4
+    C4 --> C5
+
+    SC1 --> SC2
+    SC1 --> SC3
+    SC1 --> SC4
+    SC1 --> SC5
 
     style U1 fill:#7c3aed,stroke:#a78bfa,color:#fff
     style U2 fill:#7c3aed,stroke:#a78bfa,color:#fff
     style F1 fill:#0891b2,stroke:#22d3ee,color:#fff
     style F2 fill:#0891b2,stroke:#22d3ee,color:#fff
     style F3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style F4 fill:#0891b2,stroke:#22d3ee,color:#fff
     style B1 fill:#059669,stroke:#34d399,color:#fff
     style B2 fill:#059669,stroke:#34d399,color:#fff
     style B3 fill:#059669,stroke:#34d399,color:#fff
     style B4 fill:#059669,stroke:#34d399,color:#fff
+    style B5 fill:#059669,stroke:#34d399,color:#fff
+    style CF1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style CF2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style CF3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style CF4 fill:#9333ea,stroke:#c084fc,color:#fff
     style D1 fill:#d97706,stroke:#fbbf24,color:#fff
     style D2 fill:#d97706,stroke:#fbbf24,color:#fff
     style D3 fill:#d97706,stroke:#fbbf24,color:#fff
     style D4 fill:#d97706,stroke:#fbbf24,color:#fff
-    style A1 fill:#ec4899,stroke:#f472b6,color:#fff
-    style A2 fill:#ec4899,stroke:#f472b6,color:#fff
+    style D5 fill:#d97706,stroke:#fbbf24,color:#fff
+    style D6 fill:#d97706,stroke:#fbbf24,color:#fff
     style C1 fill:#dc2626,stroke:#f87171,color:#fff
     style C2 fill:#dc2626,stroke:#f87171,color:#fff
     style C3 fill:#dc2626,stroke:#f87171,color:#fff
     style C4 fill:#dc2626,stroke:#f87171,color:#fff
+    style C5 fill:#dc2626,stroke:#f87171,color:#fff
+    style SC1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SC2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SC3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SC4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style SC5 fill:#9333ea,stroke:#c084fc,color:#fff
     style E1 fill:#475569,stroke:#64748b,color:#fff
     style E2 fill:#475569,stroke:#64748b,color:#fff
     style E3 fill:#475569,stroke:#64748b,color:#fff
