@@ -5,6 +5,7 @@
 
 import { getFirestoreClient, Collections, FieldValue } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -35,18 +36,6 @@ export interface RequestQueueDBEntry {
   globalRequestNumber: string; // BigInt as string
   fee: string; // Fee paid by user in payment token wei (e.g., "10000" for $0.01)
   createdAt: string; // ISO timestamp
-}
-
-/**
- * Normalize address based on type
- * EVM addresses (0x...) are lowercased for consistency
- * Solana addresses (base58) are kept original because base58 is case-sensitive
- */
-function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
-    return address.toLowerCase(); // EVM address
-  }
-  return address; // Solana address - keep original case
 }
 
 class UserRequestService {

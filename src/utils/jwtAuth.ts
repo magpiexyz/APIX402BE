@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { normalizeAddress } from './normalizeAddress.js';
 
 /**
  * Generate JWT token for builder API authentication
@@ -21,11 +22,11 @@ export function generateBuilderJWT(
     // Audience: Builder endpoint
     aud: builderEndpoint,
     // Token address
-    tokenAddress: tokenAddress.toLowerCase(),
+    tokenAddress: normalizeAddress(tokenAddress),
     // Issued at timestamp
     iat: Math.floor(Date.now() / 1000),
     // Unique request ID (prevents replay attacks)
-    jti: `${tokenAddress.toLowerCase()}-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+    jti: `${normalizeAddress(tokenAddress)}-${Date.now()}-${Math.random().toString(36).substring(7)}`,
   };
 
   // Sign token with secret phrase using HS256 algorithm

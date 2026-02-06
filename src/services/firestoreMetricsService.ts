@@ -5,6 +5,7 @@
 
 import { getFirestoreClient, Collections, FieldValue } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -102,7 +103,7 @@ class MetricsService {
     latencyMs: number
   ): Promise<void> {
     try {
-      const id = `${tokenAddress.toLowerCase()}#${apiSlug.toLowerCase()}`;
+      const id = `${normalizeAddress(tokenAddress)}#${apiSlug.toLowerCase()}`;
       const now = new Date().toISOString();
       const docRef = getFirestore().collection(this.collectionName).doc(id);
 
@@ -152,7 +153,7 @@ class MetricsService {
           // Create new metrics entry
           const newMetrics: ApiMetricsEntry = {
             id,
-            tokenAddress: tokenAddress.toLowerCase(),
+            tokenAddress: normalizeAddress(tokenAddress),
             apiSlug: apiSlug.toLowerCase(),
             callCount: "1",
             totalRevenue: fee,
@@ -180,7 +181,7 @@ class MetricsService {
    */
   async getApiMetrics(tokenAddress: string, apiSlug: string): Promise<ApiMetricsEntry | null> {
     try {
-      const id = `${tokenAddress.toLowerCase()}#${apiSlug.toLowerCase()}`;
+      const id = `${normalizeAddress(tokenAddress)}#${apiSlug.toLowerCase()}`;
       const doc = await getFirestore()
         .collection(this.collectionName)
         .doc(id)
@@ -302,7 +303,7 @@ class MetricsService {
       // Query all metrics for this token
       const snapshot = await getFirestore()
         .collection(this.collectionName)
-        .where('tokenAddress', '==', tokenAddress.toLowerCase())
+        .where('tokenAddress', '==', normalizeAddress(tokenAddress))
         .get();
 
       if (snapshot.empty) {

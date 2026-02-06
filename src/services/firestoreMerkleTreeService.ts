@@ -7,6 +7,7 @@
 
 import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 /**
  * Leaf entry in the Merkle tree
@@ -57,7 +58,7 @@ export class MerkleTreeService {
    * Store a Merkle tree after generation at graduation
    */
   async storeMerkleTree(tokenAddress: string, entry: Omit<MerkleTreeEntry, 'id'>): Promise<void> {
-    const docId = tokenAddress.toLowerCase();
+    const docId = normalizeAddress(tokenAddress);
     try {
       await this.firestore.collection(this.collectionName).doc(docId).set({
         id: docId,
@@ -74,7 +75,7 @@ export class MerkleTreeService {
    * Get the Merkle tree for a token
    */
   async getMerkleTree(tokenAddress: string): Promise<MerkleTreeEntry | null> {
-    const docId = tokenAddress.toLowerCase();
+    const docId = normalizeAddress(tokenAddress);
     try {
       const doc = await this.firestore.collection(this.collectionName).doc(docId).get();
       if (!doc.exists) {
@@ -101,19 +102,36 @@ export class MerkleTreeService {
     }
 
     // Find the leaf for this user
-    const normalizedUser = userAddress.toLowerCase();
-    const leaf = tree.leaves.find(l => l.address.toLowerCase() === normalizedUser);
+    const normalizedUser = normalizeAddress(userAddress);
+    const leaf = tree.leaves.find(l => normalizeAddress(l.address) === normalizedUser);
     if (!leaf) {
       return null;
     }
 
-    // Regenerate proof from tree dump using OZ StandardMerkleTree
     try {
+      const dump = JSON.parse(tree.treeDump);
+
+      // Solana trees store pre-computed proofs in the dump
+      if (dump.format === 'solana-keccak256') {
+        const solanaLeaf = dump.leaves.find(
+          (l: { address: string; proof: string[] }) => normalizeAddress(l.address) === normalizedUser
+        );
+        if (!solanaLeaf || !solanaLeaf.proof) {
+          return null;
+        }
+        return {
+          proof: solanaLeaf.proof,
+          amount: leaf.amount,
+          index: leaf.index,
+        };
+      }
+
+      // EVM trees use OZ StandardMerkleTree
       const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree');
-      const loadedTree = StandardMerkleTree.load(JSON.parse(tree.treeDump));
+      const loadedTree = StandardMerkleTree.load(dump);
 
       for (const [i, value] of loadedTree.entries()) {
-        if ((value[0] as string).toLowerCase() === normalizedUser) {
+        if (normalizeAddress(value[0] as string) === normalizedUser) {
           const proof = loadedTree.getProof(i);
           return {
             proof,
@@ -134,7 +152,7 @@ export class MerkleTreeService {
    * Update the on-chain tx hash after successfully setting the Merkle root
    */
   async setOnChainTxHash(tokenAddress: string, txHash: string): Promise<void> {
-    const docId = tokenAddress.toLowerCase();
+    const docId = normalizeAddress(tokenAddress);
     try {
       await this.firestore.collection(this.collectionName).doc(docId).update({
         setOnChainTxHash: txHash,

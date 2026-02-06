@@ -6,6 +6,7 @@
  */
 
 import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -15,7 +16,7 @@ const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
  */
 export async function acquireGraduationLock(tokenAddress: string): Promise<boolean> {
   const firestore = getFirestoreClient();
-  const docId = tokenAddress.toLowerCase();
+  const docId = normalizeAddress(tokenAddress);
   const docRef = firestore.collection(Collections.GRADUATION_LOCKS).doc(docId);
 
   try {
@@ -60,7 +61,7 @@ export async function acquireGraduationLock(tokenAddress: string): Promise<boole
  */
 export async function releaseGraduationLock(tokenAddress: string): Promise<void> {
   const firestore = getFirestoreClient();
-  const docId = tokenAddress.toLowerCase();
+  const docId = normalizeAddress(tokenAddress);
 
   try {
     await firestore.collection(Collections.GRADUATION_LOCKS).doc(docId).delete();

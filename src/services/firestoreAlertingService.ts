@@ -5,6 +5,7 @@
 
 import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -112,7 +113,7 @@ class AlertingService {
   private generateAlertId(tokenAddress: string, apiSlug: string | undefined, type: AlertType): string {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const slug = apiSlug || 'server';
-    return `${tokenAddress.toLowerCase()}#${slug}#${type}#${timestamp}`;
+    return `${normalizeAddress(tokenAddress)}#${slug}#${type}#${timestamp}`;
   }
 
   /**
@@ -148,7 +149,7 @@ class AlertingService {
       id: this.generateAlertId(tokenAddress, apiSlug, type),
       type,
       severity: this.getSeverity(type, value),
-      tokenAddress: tokenAddress.toLowerCase(),
+      tokenAddress: normalizeAddress(tokenAddress),
       apiSlug,
       message,
       value,
@@ -279,7 +280,7 @@ class AlertingService {
     try {
       const snapshot = await getFirestore()
         .collection(this.alertsCollection)
-        .where('tokenAddress', '==', tokenAddress.toLowerCase())
+        .where('tokenAddress', '==', normalizeAddress(tokenAddress))
         .where('type', '==', type)
         .where('resolved', '==', false)
         .get();
@@ -321,7 +322,7 @@ class AlertingService {
     try {
       const snapshot = await getFirestore()
         .collection(this.alertsCollection)
-        .where('tokenAddress', '==', tokenAddress.toLowerCase())
+        .where('tokenAddress', '==', normalizeAddress(tokenAddress))
         .get();
 
       return snapshot.docs.map(doc => doc.data() as Alert);
@@ -372,7 +373,7 @@ class AlertingService {
     try {
       const snapshot = await getFirestore()
         .collection(this.webhooksCollection)
-        .where('tokenAddress', '==', tokenAddress.toLowerCase())
+        .where('tokenAddress', '==', normalizeAddress(tokenAddress))
         .where('active', '==', true)
         .get();
 
@@ -392,7 +393,7 @@ class AlertingService {
     events: string[] = ['all']
   ): Promise<void> {
     const config: WebhookConfig = {
-      tokenAddress: tokenAddress.toLowerCase(),
+      tokenAddress: normalizeAddress(tokenAddress),
       webhookUrl,
       events,
       createdAt: new Date().toISOString(),
@@ -400,7 +401,7 @@ class AlertingService {
     };
 
     try {
-      const docId = `${tokenAddress.toLowerCase()}_${Buffer.from(webhookUrl).toString('base64').slice(0, 20)}`;
+      const docId = `${normalizeAddress(tokenAddress)}_${Buffer.from(webhookUrl).toString('base64').slice(0, 20)}`;
       await getFirestore()
         .collection(this.webhooksCollection)
         .doc(docId)
@@ -417,7 +418,7 @@ class AlertingService {
    */
   async removeWebhook(tokenAddress: string, webhookUrl: string): Promise<void> {
     try {
-      const docId = `${tokenAddress.toLowerCase()}_${Buffer.from(webhookUrl).toString('base64').slice(0, 20)}`;
+      const docId = `${normalizeAddress(tokenAddress)}_${Buffer.from(webhookUrl).toString('base64').slice(0, 20)}`;
       await getFirestore()
         .collection(this.webhooksCollection)
         .doc(docId)

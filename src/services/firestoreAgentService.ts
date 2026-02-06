@@ -6,6 +6,7 @@
 import { getFirestoreClient, Collections, FieldValue } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -64,7 +65,7 @@ export class AgentService {
       name: params.name,
       description: params.description,
       systemInstructions: params.systemInstructions || undefined,
-      creator: params.creator.toLowerCase(),
+      creator: normalizeAddress(params.creator),
       llmProvider: params.llmProvider,
       availableTools: params.availableTools,
       starterPrompts: params.starterPrompts,
@@ -122,7 +123,7 @@ export class AgentService {
       let query: FirebaseFirestore.Query = getFirestore().collection(this.collectionName);
 
       if (filters?.creator) {
-        query = query.where('creator', '==', filters.creator.toLowerCase());
+        query = query.where('creator', '==', normalizeAddress(filters.creator));
       }
 
       if (filters?.isPublic !== undefined) {
@@ -216,7 +217,7 @@ export class AgentService {
       if (!agent) {
         throw new Error(`Agent ${id} not found`);
       }
-      if (agent.creator !== creator.toLowerCase()) {
+      if (agent.creator !== normalizeAddress(creator)) {
         throw new Error(`Unauthorized: Only agent creator can delete`);
       }
 

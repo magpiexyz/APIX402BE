@@ -6,6 +6,7 @@
 import { getFirestoreClient, Collections, FieldValue } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -283,7 +284,7 @@ export class ChatSessionService {
     agentId: string,
     userAddress: string
   ): Promise<ChatSession> {
-    const userAddressLower = userAddress.toLowerCase();
+    const userAddressLower = normalizeAddress(userAddress);
 
     try {
       const existingSession = await this.findSessionByAgentAndUser(
@@ -332,7 +333,7 @@ export class ChatSessionService {
     agentId: string,
     userAddress: string
   ): Promise<ChatSession> {
-    const userAddressLower = userAddress.toLowerCase();
+    const userAddressLower = normalizeAddress(userAddress);
 
     try {
       const now = new Date().toISOString();
@@ -418,7 +419,7 @@ export class ChatSessionService {
     try {
       const snapshot = await getFirestore()
         .collection(this.sessionsCollection)
-        .where('userAddress', '==', userAddress.toLowerCase())
+        .where('userAddress', '==', normalizeAddress(userAddress))
         .get();
 
       return snapshot.docs.map(doc => doc.data() as ChatSession);

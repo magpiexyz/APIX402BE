@@ -20,6 +20,7 @@ import {
   RATE_LIMITS,
   RateLimitResult,
 } from '../services/firestoreRateLimitService.js';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 /**
  * Extract IP address from request
@@ -48,7 +49,7 @@ function extractWalletFromPayment(paymentData: string | string[] | undefined): s
 
     // EVM: Look for "from" field in payment data
     if (parsed.from) {
-      return parsed.from.toLowerCase();
+      return normalizeAddress(parsed.from);
     }
 
     // Solana: Look for "payer" field

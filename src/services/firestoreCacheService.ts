@@ -12,6 +12,7 @@
 import { getFirestoreClient, Collections, Timestamp } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
 import dayjs from 'dayjs';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Configuration
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -60,9 +61,9 @@ export interface CacheResult<T> {
  */
 export const CacheKeys = {
   SERVER_BY_SLUG: (slug: string) => `server:${slug.toLowerCase()}`,
-  SERVER_BY_ID: (tokenAddress: string) => `server:id:${tokenAddress.toLowerCase()}`,
-  METRICS: (tokenAddress: string) => `metrics:${tokenAddress.toLowerCase()}`,
-  CONTRACT_STATE: (tokenAddress: string) => `contract:${tokenAddress.toLowerCase()}`,
+  SERVER_BY_ID: (tokenAddress: string) => `server:id:${normalizeAddress(tokenAddress)}`,
+  METRICS: (tokenAddress: string) => `metrics:${normalizeAddress(tokenAddress)}`,
+  CONTRACT_STATE: (tokenAddress: string) => `contract:${normalizeAddress(tokenAddress)}`,
   ALL_SERVERS: () => 'servers:all',
   SERVERS_BY_CHAIN: (chainId: string) => `servers:chain:${chainId}`,
 };

@@ -8,6 +8,7 @@ import { facilitator as thirdwebFacilitatorFn, settlePayment } from 'thirdweb/x4
 import { createThirdwebClient } from 'thirdweb';
 import { baseSepolia } from 'thirdweb/chains';
 import { ChainType, ChainConfigEntry } from './firestoreChainConfigService.js';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 /**
  * Payment verification result
@@ -116,7 +117,7 @@ class MultiChainPaymentService {
       }
 
       // Verify recipient matches
-      if (authorization.to.toLowerCase() !== expectedPayTo.toLowerCase()) {
+      if (normalizeAddress(authorization.to) !== normalizeAddress(expectedPayTo)) {
         return {
           valid: false,
           error: `Payment recipient mismatch: expected ${expectedPayTo}, got ${authorization.to}`,
@@ -148,7 +149,7 @@ class MultiChainPaymentService {
 
       return {
         valid: true,
-        userAddress: authorization.from.toLowerCase(),
+        userAddress: normalizeAddress(authorization.from),
         chainType: 'evm',
       };
     } catch (error: any) {
@@ -452,13 +453,8 @@ class MultiChainPaymentService {
         return null;
       }
 
-      // For EVM, lowercase the address
-      if (chainType === 'evm') {
-        return authorization.from.toLowerCase();
-      }
-
-      // For Solana, return as-is (base58)
-      return authorization.from;
+      // normalizeAddress handles both EVM (lowercase) and Solana (preserve case)
+      return normalizeAddress(authorization.from);
     } catch {
       return null;
     }

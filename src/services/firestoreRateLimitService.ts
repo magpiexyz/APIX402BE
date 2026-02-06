@@ -7,6 +7,7 @@
 
 import { getFirestoreClient, Collections, FieldValue, Timestamp } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Firestore client singleton
 let firestoreClient: Firestore | null = null;
@@ -170,7 +171,7 @@ export function getIpKey(ip: string): string {
  * Generate rate limit key for wallet
  */
 export function getWalletKey(wallet: string): string {
-  return `wallet:${wallet.toLowerCase()}`;
+  return `wallet:${normalizeAddress(wallet)}`;
 }
 
 /**

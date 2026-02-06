@@ -7,6 +7,7 @@
 
 import { getFirestoreClient, Collections } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 /**
  * Parameter definition for structured API documentation
@@ -69,18 +70,6 @@ export interface IAOTokenDBEntry {
   pendingFeesForDistribution?: string;  // BigInt — fees collected but not yet distributed on-chain
   lastFeeDistributionAt?: string;       // ISO timestamp of last on-chain fee distribution
   lastFeeDistributionTxHash?: string;   // TX hash of last on-chain fee distribution
-}
-
-/**
- * Normalize address for storage/lookup
- * EVM addresses (0x...) are lowercased for consistency
- * Solana addresses (base58) are kept as-is since base58 is case-sensitive
- */
-function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
-    return address.toLowerCase();
-  }
-  return address; // Solana addresses - keep original case
 }
 
 class TokenService {

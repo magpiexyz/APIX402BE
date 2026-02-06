@@ -7,6 +7,7 @@
 
 import { getFirestoreClient, Collections, FieldValue } from '../db/firestoreClient.js';
 import type { Firestore } from '@google-cloud/firestore';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 /**
  * Token earning entry — tracks cumulative earnings for a user on a specific token
@@ -24,16 +25,6 @@ export interface TokenEarningEntry {
   claimTxHash?: string;         // Transaction hash of claim (if claimed)
   createdAt: string;            // ISO timestamp
   updatedAt: string;            // ISO timestamp
-}
-
-/**
- * Normalize address: lowercase for EVM (0x...), preserve case for Solana (base58)
- */
-function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
-    return address.toLowerCase();
-  }
-  return address; // Solana addresses - keep original case
 }
 
 export class EarningsService {

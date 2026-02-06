@@ -28,6 +28,7 @@ import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } 
 import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
 import { v2 as cloudinary } from 'cloudinary'
 import { dispatchGraduationTask } from './services/graduationDispatcher.js'
+import { normalizeAddress } from './utils/normalizeAddress.js'
 import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
 import { notifyForGraduation } from './services/graduationNotifier.js'
 
@@ -317,15 +318,7 @@ try {
 }
 
 
-/**
- * Normalize address - lowercase EVM addresses, preserve Solana addresses
- */
-function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
-    return address.toLowerCase()
-  }
-  return address // Solana addresses are case-sensitive (base58)
-}
+// normalizeAddress imported from ./utils/normalizeAddress.js
 
 /**
  * Extract user address from payment data (PAYMENT-SIGNATURE header - x402 V2)
@@ -1448,10 +1441,6 @@ app.post('/api/register', async (req, res) => {
     }
 
     // Create token entry
-    // For Solana, addresses are case-sensitive base58, so don't lowercase
-    // For EVM, addresses should be lowercased
-    const normalizeAddress = (addr: string) => chainType === "solana" ? addr : addr.toLowerCase()
-
     const tokenEntry: IAOTokenDBEntry = {
       id: normalizeAddress(tokenAddress),
       slug: finalServerSlug,
@@ -1655,7 +1644,7 @@ app.post('/api/add-api', async (req, res) => {
     }
 
     // Verify builder ownership
-    if (existingToken.builder.toLowerCase() !== builder.toLowerCase()) {
+    if (normalizeAddress(existingToken.builder) !== normalizeAddress(builder)) {
       return res.status(403).json({
         error: "Unauthorized",
         message: "Only the server owner can add APIs"
@@ -1759,8 +1748,7 @@ app.patch('/api/update-api', async (req, res) => {
     }
 
     // Verify builder ownership
-    const normalizedBuilder = builder.toLowerCase()
-    if (tokenEntry.builder.toLowerCase() !== normalizedBuilder) {
+    if (normalizeAddress(tokenEntry.builder) !== normalizeAddress(builder)) {
       return res.status(403).json({
         error: "Unauthorized",
         message: "Only the server builder can update APIs"
@@ -1883,7 +1871,7 @@ app.delete('/api/server/:slug', async (req, res) => {
 
     // Delete the token document
     const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
-    await db.collection('iao-tokens').doc(tokenEntry.id.toLowerCase()).delete()
+    await db.collection('iao-tokens').doc(normalizeAddress(tokenEntry.id)).delete()
 
     console.log(`🗑️ Server deleted: ${serverSlug} (${tokenEntry.id})`)
 
@@ -3475,7 +3463,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
  */
 app.get('/api/earnings/:serverSlug/:userAddress', async (req, res) => {
   const serverSlug = req.params.serverSlug.toLowerCase()
-  const userAddress = req.params.userAddress.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
 
   try {
     if (!earningsService || !tokenService) {
@@ -3565,7 +3553,7 @@ app.get('/api/earnings/:serverSlug', async (req, res) => {
  */
 app.get('/api/claim/:serverSlug/:userAddress', async (req, res) => {
   const serverSlug = req.params.serverSlug.toLowerCase()
-  const userAddress = req.params.userAddress.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
 
   try {
     if (!merkleTreeService || !earningsService) {
@@ -3620,7 +3608,7 @@ app.get('/api/claim/:serverSlug/:userAddress', async (req, res) => {
  */
 app.post('/api/claim/:serverSlug/:userAddress/confirm', async (req, res) => {
   const serverSlug = req.params.serverSlug.toLowerCase()
-  const userAddress = req.params.userAddress.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
   const { txHash } = req.body
 
   try {
@@ -3855,7 +3843,7 @@ app.put('/api/agents/:id', async (req, res) => {
     if (!agent) {
       return res.status(404).json({ error: "Agent not found" })
     }
-    if (agent.creator !== creator.toLowerCase()) {
+    if (normalizeAddress(agent.creator) !== normalizeAddress(creator)) {
       return res.status(403).json({
         error: "Unauthorized: Only agent creator can update"
       })
@@ -4891,10 +4879,9 @@ app.post('/internal/graduate/:tokenAddress', async (req, res) => {
       })
 
       // Set merkleRoot on token entry (graduated stays false until Cloud Function confirms)
-      const normalizedTokenAddr = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
       const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
         .collection('iao-tokens')
-        .doc(normalizedTokenAddr)
+        .doc(normalizeAddress(tokenAddress))
       await docRef.update({
         merkleRoot,
         updatedAt: new Date().toISOString(),
@@ -4957,10 +4944,9 @@ app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
 
     const { txHash } = req.body || {}
 
-    const normalizedAddr = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
     const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
       .collection('iao-tokens')
-      .doc(normalizedAddr)
+      .doc(normalizeAddress(tokenAddress))
 
     await docRef.update({
       graduated: true,
@@ -5038,8 +5024,8 @@ app.post('/internal/seed-test-data/:tokenAddress', async (req, res) => {
       return res.status(400).json({ error: 'userAddress and tokensEarned are required' })
     }
 
-    const normalizedToken = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress
-    const normalizedUser = userAddress.startsWith('0x') ? userAddress.toLowerCase() : userAddress
+    const normalizedToken = normalizeAddress(tokenAddress)
+    const normalizedUser = normalizeAddress(userAddress)
 
     // Get token to verify it exists
     const token = await tokenService.getItem(normalizedToken)
@@ -5238,7 +5224,7 @@ app.post('/internal/fee-distribution-confirm', async (req, res) => {
     const now = new Date().toISOString()
 
     for (const tokenAddress of tokens) {
-      const docRef = db.collection('iao-tokens').doc(tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress)
+      const docRef = db.collection('iao-tokens').doc(normalizeAddress(tokenAddress))
       batch.update(docRef, {
         pendingFeesForDistribution: '0',
         lastFeeDistributionAt: timestamp || now,

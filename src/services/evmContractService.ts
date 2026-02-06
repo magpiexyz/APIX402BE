@@ -8,6 +8,7 @@ import { createThirdwebClient, getContract, readContract } from 'thirdweb';
 import { baseSepolia } from 'thirdweb/chains';
 import fs from 'fs';
 import path from 'path';
+import { normalizeAddress } from '../utils/normalizeAddress.js';
 
 // Load IAOToken ABI
 let IAOTokenABI: any[] = [];
@@ -140,7 +141,7 @@ class EVMContractService {
       const isGraduated = distributed >= threshold;
 
       return {
-        tokenAddress: tokenAddress.toLowerCase(),
+        tokenAddress: normalizeAddress(tokenAddress),
         graduationThreshold: graduationThreshold.toString(),
         totalTokensDistributed: totalTokensDistributed.toString(),
         totalFeesCollected: totalFeesCollected.toString(),
