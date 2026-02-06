@@ -1,0 +1,2549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APIX (IAO) Complete System Documentation</title>
+<style>
+  /* ===== Reset & Base ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: #0f1117;
+    color: #e6edf3;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== Topbar ===== */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: rgba(15, 17, 23, 0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid #30363d;
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 32px;
+  }
+  .topbar-brand {
+    font-weight: 700;
+    font-size: 16px;
+    color: #58a6ff;
+    white-space: nowrap;
+  }
+  .topbar-nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .topbar-nav::-webkit-scrollbar { display: none; }
+  .topbar-nav a {
+    color: #8b949e;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+  }
+  .topbar-nav a:hover {
+    background: #21262d;
+    color: #e6edf3;
+    text-decoration: none;
+  }
+
+  /* ===== Layout ===== */
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 24px 120px;
+  }
+
+  /* ===== Hero ===== */
+  .hero {
+    text-align: center;
+    padding: 80px 0 60px;
+    border-bottom: 1px solid #30363d;
+    margin-bottom: 48px;
+  }
+  .hero h1 {
+    font-size: 42px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #58a6ff, #d2a8ff, #7ee787);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 16px;
+    letter-spacing: -0.5px;
+  }
+  .hero p {
+    font-size: 18px;
+    color: #8b949e;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  /* ===== Section Headings ===== */
+  .section { margin-bottom: 64px; }
+  .section-number {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f1117;
+    background: #58a6ff;
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-bottom: 8px;
+  }
+  .section-number.green { background: #7ee787; }
+  .section-number.purple { background: #d2a8ff; }
+  .section-number.orange { background: #ffa657; }
+
+  h2 {
+    font-size: 32px;
+    font-weight: 700;
+    color: #e6edf3;
+    margin-bottom: 8px;
+    letter-spacing: -0.3px;
+  }
+  h3 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin: 32px 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  h4 {
+    font-size: 17px;
+    font-weight: 600;
+    color: #d2a8ff;
+    margin: 24px 0 8px;
+  }
+  .section-desc {
+    color: #8b949e;
+    font-size: 16px;
+    margin-bottom: 24px;
+  }
+
+  /* ===== Cards ===== */
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin-bottom: 8px;
+  }
+  .card-subtitle {
+    font-size: 13px;
+    color: #8b949e;
+    margin-bottom: 12px;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .card-grid-4 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+
+  /* ===== Code Blocks ===== */
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 13px;
+  }
+  pre code { color: #e6edf3; }
+  :not(pre) > code {
+    background: #21262d;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #ffa657;
+  }
+
+  /* ===== Tables ===== */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    border-radius: 8px;
+    border: 1px solid #30363d;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  thead { background: #161b22; }
+  th {
+    text-align: left;
+    padding: 10px 16px;
+    font-weight: 600;
+    color: #e6edf3;
+    border-bottom: 2px solid #30363d;
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid #21262d;
+    color: #c9d1d9;
+  }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+  /* ===== Tags / Badges ===== */
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: #58a6ff; }
+  .tag-green { background: rgba(126,231,135,0.15); color: #7ee787; }
+  .tag-purple { background: rgba(210,168,255,0.15); color: #d2a8ff; }
+  .tag-orange { background: rgba(255,166,87,0.15); color: #ffa657; }
+  .tag-red { background: rgba(248,81,73,0.15); color: #f85149; }
+  .tag-yellow { background: rgba(227,179,65,0.15); color: #e3b341; }
+
+  /* ===== Diagram (ASCII art) ===== */
+  .diagram {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0 20px;
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #7ee787;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* ===== Flow (horizontal lifecycle) ===== */
+  .flow {
+    display: flex;
+    gap: 0;
+    margin: 20px 0 28px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  .flow-step {
+    flex: 1;
+    min-width: 140px;
+    text-align: center;
+    position: relative;
+    padding: 0 8px;
+  }
+  .flow-step::after {
+    content: '';
+    position: absolute;
+    top: 22px;
+    right: -1px;
+    width: calc(100%);
+    height: 2px;
+    background: #30363d;
+    z-index: 0;
+  }
+  .flow-step:last-child::after { display: none; }
+  .flow-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #21262d;
+    border: 2px solid #58a6ff;
+    font-weight: 700;
+    font-size: 16px;
+    color: #58a6ff;
+    position: relative;
+    z-index: 1;
+    margin-bottom: 8px;
+  }
+  .flow-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: #e6edf3;
+    margin-bottom: 4px;
+  }
+  .flow-desc {
+    font-size: 12px;
+    color: #8b949e;
+    line-height: 1.4;
+  }
+
+  /* ===== Steps (numbered list) ===== */
+  .steps { counter-reset: step-counter; list-style: none; margin: 16px 0; }
+  .steps li {
+    counter-increment: step-counter;
+    position: relative;
+    padding-left: 48px;
+    margin-bottom: 16px;
+    min-height: 32px;
+  }
+  .steps li::before {
+    content: counter(step-counter);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #21262d;
+    border: 2px solid #58a6ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: #58a6ff;
+  }
+  .steps li strong { color: #e6edf3; }
+
+  /* ===== Callout ===== */
+  .callout {
+    border-left: 4px solid #58a6ff;
+    background: rgba(88, 166, 255, 0.06);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+    margin: 16px 0 20px;
+    font-size: 14px;
+  }
+  .callout.warning { border-left-color: #e3b341; background: rgba(227, 179, 65, 0.06); }
+  .callout.danger { border-left-color: #f85149; background: rgba(248, 81, 73, 0.06); }
+  .callout.success { border-left-color: #7ee787; background: rgba(126, 231, 135, 0.06); }
+  .callout.purple { border-left-color: #d2a8ff; background: rgba(210, 168, 255, 0.06); }
+  .callout-title {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 6px;
+  }
+  .callout.warning .callout-title { color: #e3b341; }
+  .callout.danger .callout-title { color: #f85149; }
+  .callout.success .callout-title { color: #7ee787; }
+  .callout.purple .callout-title { color: #d2a8ff; }
+
+  /* ===== Method List (for service cards) ===== */
+  .method-list {
+    list-style: none;
+    margin: 8px 0 0;
+  }
+  .method-list li {
+    padding: 4px 0;
+    font-size: 13px;
+    color: #c9d1d9;
+  }
+  .method-list li code {
+    color: #7ee787;
+    background: rgba(126,231,135,0.08);
+  }
+  .method-list li .method-desc {
+    color: #8b949e;
+    font-size: 12px;
+  }
+
+  /* ===== Divider ===== */
+  hr {
+    border: none;
+    border-top: 1px solid #30363d;
+    margin: 48px 0;
+  }
+
+  /* ===== Route Group Header ===== */
+  .route-group {
+    font-weight: 700;
+    font-size: 14px;
+    color: #d2a8ff;
+    padding: 8px 16px;
+    background: rgba(210, 168, 255, 0.06);
+    border-bottom: 1px solid #30363d;
+  }
+  .method-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', Consolas, monospace;
+    min-width: 48px;
+    text-align: center;
+  }
+  .method-get { background: rgba(126,231,135,0.15); color: #7ee787; }
+  .method-post { background: rgba(88,166,255,0.15); color: #58a6ff; }
+  .method-put { background: rgba(210,168,255,0.15); color: #d2a8ff; }
+  .method-patch { background: rgba(255,166,87,0.15); color: #ffa657; }
+  .method-delete { background: rgba(248,81,73,0.15); color: #f85149; }
+  .method-head { background: rgba(227,179,65,0.15); color: #e3b341; }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 28px; }
+    .hero p { font-size: 15px; }
+    h2 { font-size: 26px; }
+    .card-grid, .card-grid-4 { grid-template-columns: 1fr; }
+    .topbar { padding: 0 12px; gap: 16px; }
+    .container { padding: 24px 16px 80px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== TOPBAR ===== -->
+<nav class="topbar">
+  <div class="topbar-brand">APIX Docs</div>
+  <div class="topbar-nav">
+    <a href="#overview">1. Overview</a>
+    <a href="#backend">2. Backend</a>
+    <a href="#frontend">3. Frontend</a>
+    <a href="#cloud-functions">4. Cloud Functions</a>
+    <a href="#evm-contracts">5. EVM Contracts</a>
+    <a href="#solana-program">6. Solana Program</a>
+    <a href="#token-lifecycle">7. Token Lifecycle</a>
+    <a href="#fee-distribution">8. Fee Distribution</a>
+    <a href="#deployment">9. Deployment</a>
+    <a href="#env-vars">10. Env Vars</a>
+    <a href="#db-schema">11. DB Schema</a>
+    <a href="#file-reference">12. File Reference</a>
+  </div>
+</nav>
+
+<div class="container">
+
+  <!-- ===== HERO ===== -->
+  <div class="hero">
+    <h1>APIX (IAO) Complete System Documentation</h1>
+    <p>End-to-end knowledge transfer: Backend, Frontend, Smart Contracts, Cloud Functions, Automations, and Deployment</p>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SECTION 1: SYSTEM OVERVIEW                                    -->
+  <!-- ============================================================ -->
+  <div class="section" id="overview">
+    <span class="section-number">Section 1</span>
+    <h2>System Overview</h2>
+    <p class="section-desc">High-level architecture, component map, and multi-chain support.</p>
+
+    <h3>What is APIX?</h3>
+    <div class="card">
+      <p>
+        <strong>APIX (Initial API Offering)</strong> is a decentralized API marketplace that enables developers to monetize their APIs through a bonding curve token model.
+        Users pay per API call, earn tokens proportional to usage, and once enough tokens are distributed (graduation), liquidity auto-deploys to a DEX.
+      </p>
+      <br>
+      <p>The core innovation is the <strong>pay-after-success</strong> model: users are only charged if the API returns a successful response. Token distribution is tracked virtually in Firestore and committed on-chain at graduation via a Merkle tree airdrop.</p>
+    </div>
+
+    <h3>Architecture Overview</h3>
+    <div class="diagram">User (Wallet)
+    |
+    v
+Frontend (React/Vite on Firebase Hosting)
+    |
+    v
+Backend Proxy (Express.js on Cloud Run)
+    |
+    +-----> Firestore (Database)
+    +-----> Builder API (actual API endpoint)
+    +-----> Thirdweb (Payment settlement)
+    +-----> Cloud Tasks (Graduation queue)
+    |
+    v
+Cloud Functions (4 total)
+    |
+    +-----> EVM Chain (Base Sepolia)
+    |         +-----> TokenDistributor contract
+    |         +-----> Uniswap V4 (graduation)
+    |
+    +-----> Solana (Devnet)
+              +-----> IAO Factory program
+              +-----> Raydium CLMM (graduation)</div>
+
+    <h3>Key Components</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Technology</th>
+            <th>Location</th>
+            <th>Deployment</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Backend</strong></td>
+            <td>Express.js + TypeScript</td>
+            <td><code>/home/error0180/APIX402BE</code></td>
+            <td><span class="tag tag-blue">Cloud Run</span></td>
+          </tr>
+          <tr>
+            <td><strong>Frontend</strong></td>
+            <td>React + Vite + Thirdweb</td>
+            <td><code>/home/error0180/APIX402FE</code></td>
+            <td><span class="tag tag-green">Firebase Hosting</span></td>
+          </tr>
+          <tr>
+            <td><strong>EVM Contracts</strong></td>
+            <td>Solidity + Foundry</td>
+            <td><code>~/hyperpie/contracts/IAO/</code></td>
+            <td><span class="tag tag-purple">Base Sepolia</span></td>
+          </tr>
+          <tr>
+            <td><strong>Solana Program</strong></td>
+            <td>Rust + Anchor</td>
+            <td><code>~/hyperpie/contracts/IAO/solana-program/</code></td>
+            <td><span class="tag tag-orange">Devnet</span></td>
+          </tr>
+          <tr>
+            <td><strong>Cloud Functions</strong></td>
+            <td>TypeScript</td>
+            <td><code>APIX402BE/cloud-functions/</code></td>
+            <td><span class="tag tag-blue">Cloud Functions Gen2</span></td>
+          </tr>
+          <tr>
+            <td><strong>Database</strong></td>
+            <td>Firestore</td>
+            <td>GCP</td>
+            <td><span class="tag tag-green">Firebase</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Core Flow</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num">1</div>
+        <div class="flow-label">Register</div>
+        <div class="flow-desc">Developer registers API server, creates on-chain token</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">2</div>
+        <div class="flow-label">Call API</div>
+        <div class="flow-desc">User sends request with payment signature (x402 protocol)</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">3</div>
+        <div class="flow-label">Verify</div>
+        <div class="flow-desc">Backend verifies payment WITHOUT settling</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">4</div>
+        <div class="flow-label">Forward</div>
+        <div class="flow-desc">Request forwarded to builder API with JWT auth</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">5</div>
+        <div class="flow-label">Settle</div>
+        <div class="flow-desc">Payment settled ONLY if builder returns 2xx</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">6</div>
+        <div class="flow-label">Accrue</div>
+        <div class="flow-desc">Tokens credited to user virtually in Firestore</div>
+      </div>
+    </div>
+
+    <h3>Multi-Chain Support</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Chain</th>
+            <th>Chain ID</th>
+            <th>Factory / Program</th>
+            <th>Payment Token</th>
+            <th>DEX</th>
+            <th>Explorer</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag tag-blue">Base Sepolia</span></td>
+            <td>84532</td>
+            <td><code>0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800</code></td>
+            <td>USDC</td>
+            <td>Uniswap V4</td>
+            <td>basescan.org</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-purple">Solana Devnet</span></td>
+            <td>devnet</td>
+            <td><code>FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA</code></td>
+            <td>USDC</td>
+            <td>Raydium CLMM</td>
+            <td>solscan.io</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- ============================================================ -->
+  <!-- SECTION 2: BACKEND (Express.js)                               -->
+  <!-- ============================================================ -->
+  <div class="section" id="backend">
+    <span class="section-number green">Section 2</span>
+    <h2>Backend (Express.js)</h2>
+    <p class="section-desc">Main proxy server handling payment verification, API forwarding, token distribution, and all internal automations.</p>
+
+    <h3>File Structure</h3>
+    <pre><code>APIX402BE/
+├── src/
+│   ├── index.ts                            <span style="color:#8b949e"># 5,307 lines - Main server + all routes</span>
+│   ├── db/firestoreClient.ts               <span style="color:#8b949e"># Firestore initialization</span>
+│   ├── services/
+│   │   ├── firestoreTokenService.ts        <span style="color:#8b949e"># Token CRUD, atomic distribution</span>
+│   │   ├── firestoreEarningsService.ts     <span style="color:#8b949e"># Per-user earnings tracking</span>
+│   │   ├── firestoreMerkleTreeService.ts   <span style="color:#8b949e"># Merkle tree storage + proofs</span>
+│   │   ├── firestoreMetricsService.ts      <span style="color:#8b949e"># API call metrics, P95 latency</span>
+│   │   ├── firestoreCacheService.ts        <span style="color:#8b949e"># Firestore-backed cache with TTL</span>
+│   │   ├── firestoreRateLimitService.ts    <span style="color:#8b949e"># Distributed rate limiting</span>
+│   │   ├── firestoreChainConfigService.ts  <span style="color:#8b949e"># Multi-chain configuration</span>
+│   │   ├── firestoreAgentService.ts        <span style="color:#8b949e"># AI agent management</span>
+│   │   ├── firestoreChatSessionService.ts  <span style="color:#8b949e"># Chat session + messages</span>
+│   │   ├── firestoreAgentPaymentService.ts <span style="color:#8b949e"># Agent payment tracking</span>
+│   │   ├── firestoreAlertingService.ts     <span style="color:#8b949e"># System alerting</span>
+│   │   ├── firestoreUserRequestService.ts  <span style="color:#8b949e"># Legacy request history</span>
+│   │   ├── multiChainPaymentService.ts     <span style="color:#8b949e"># EVM + Solana payment verify/settle</span>
+│   │   ├── evmContractService.ts           <span style="color:#8b949e"># Read on-chain EVM state</span>
+│   │   ├── solanaContractService.ts        <span style="color:#8b949e"># Read Solana program state</span>
+│   │   ├── graduationDispatcher.ts         <span style="color:#8b949e"># Cloud Tasks dispatch with dedup</span>
+│   │   ├── graduationLock.ts               <span style="color:#8b949e"># 5-min TTL Firestore lock</span>
+│   │   ├── graduationNotifier.ts           <span style="color:#8b949e"># Cloud Function invocation</span>
+│   │   ├── llmService.ts                   <span style="color:#8b949e"># Claude/GPT/Gemini LLM integration</span>
+│   │   ├── agentToolService.ts             <span style="color:#8b949e"># Agent tool calling</span>
+│   │   └── circuitBreaker.ts               <span style="color:#8b949e"># Fault tolerance</span>
+│   ├── middleware/
+│   │   └── rateLimiter.ts                  <span style="color:#8b949e"># 4-tier: global/IP/wallet/API</span>
+│   └── utils/
+│       └── jwtAuth.ts                      <span style="color:#8b949e"># JWT for builder authentication</span>
+├── abis/                                   <span style="color:#8b949e"># IAOToken.json, IAOTokenFactory.json</span>
+├── cloud-functions/                        <span style="color:#8b949e"># 4 Cloud Functions</span>
+├── tests/                                  <span style="color:#8b949e"># 29 Vitest test files</span>
+├── Dockerfile                              <span style="color:#8b949e"># Multi-stage for Cloud Run</span>
+├── cloudbuild.yaml                         <span style="color:#8b949e"># CI/CD pipeline</span>
+└── package.json</code></pre>
+
+    <h3>All API Routes</h3>
+
+    <!-- Server Management Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Server Management</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/register</code></td>
+            <td>Register new server (2-phase: validate then register)</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/add-api</code></td>
+            <td>Add API to existing server</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-patch">PATCH</span></td>
+            <td><code>/api/update-api</code></td>
+            <td>Update API configuration</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/server/:slug</code></td>
+            <td>Get server metadata</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-delete">DELETE</span></td>
+            <td><code>/api/server/:slug</code></td>
+            <td>Delete server and APIs</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/servers</code></td>
+            <td>List all servers (paginated, filterable, sortable)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- API Proxy Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">API Proxy (Core)</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-get">GET</span> <span class="method-badge method-post">POST</span></td>
+            <td><code>/api/:serverSlug/:apiSlug</code></td>
+            <td>Call API endpoint through proxy</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-head">HEAD</span></td>
+            <td><code>/api/:serverSlug/:apiSlug</code></td>
+            <td>API discovery</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Metrics & Analytics Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Metrics &amp; Analytics</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/metrics/:serverSlug</code></td>
+            <td>Server-level metrics</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/metrics/:serverSlug/:apiSlug</code></td>
+            <td>Per-API metrics with contract state</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Earnings & Claims Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Earnings &amp; Claims</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/earnings/:serverSlug/:userAddress</code></td>
+            <td>User's token earnings</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/earnings/:serverSlug</code></td>
+            <td>All earnings for server</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/claim/:serverSlug/:userAddress</code></td>
+            <td>Get Merkle proof for claiming</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/claim/:serverSlug/:userAddress/confirm</code></td>
+            <td>Confirm claim transaction</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Chain & Transactions Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Chain &amp; Transactions</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/chains</code></td>
+            <td>Supported blockchain networks</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/transactions</code></td>
+            <td>Transaction history</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- AI Agents Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">AI Agents</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/agents</code></td>
+            <td>Create agent</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/agents</code></td>
+            <td>List agents</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/agents/:id</code></td>
+            <td>Get agent</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-put">PUT</span></td>
+            <td><code>/api/agents/:id</code></td>
+            <td>Update agent</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-delete">DELETE</span></td>
+            <td><code>/api/agents/:id</code></td>
+            <td>Delete agent</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Chat Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Chat</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/chat/sessions</code></td>
+            <td>Create chat session</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/chat/message</code></td>
+            <td>Send message</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/api/chat/stream/:sessionId</code></td>
+            <td>SSE streaming responses</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Utilities Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Utilities</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/upload-logo</code></td>
+            <td>Upload server logo (Cloudinary)</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/api/test-endpoint</code></td>
+            <td>Test API reachability</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Internal/Automation Routes -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th colspan="3" class="route-group">Internal / Automation</th></tr>
+          <tr><th style="width:100px">Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/internal/graduate/:tokenAddress</code></td>
+            <td>Build Merkle tree + trigger graduation</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/internal/graduation-confirm/:tokenAddress</code></td>
+            <td>Mark graduated after on-chain TX</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-get">GET</span></td>
+            <td><code>/internal/graduation-earnings/:tokenAddress</code></td>
+            <td>Earnings for batch mint</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/internal/trigger-fee-distribution</code></td>
+            <td>Weekly fee distribution trigger</td>
+          </tr>
+          <tr>
+            <td><span class="method-badge method-post">POST</span></td>
+            <td><code>/internal/fee-distribution-confirm</code></td>
+            <td>Confirm fee distribution</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Core Proxy Flow</h3>
+    <p>The pay-after-success sequence -- users are only charged if the builder API returns a successful response:</p>
+    <div class="diagram">User                    Backend Proxy              Builder API
+  |                         |                          |
+  |-- API request --------->|                          |
+  |   + PAYMENT-SIGNATURE   |                          |
+  |                         |-- Verify payment ------->| (no settle)
+  |                         |                          |
+  |                         |-- Forward request ------>|
+  |                         |   + X-IAO-Auth JWT       |
+  |                         |                          |
+  |                         |<-- Response (2xx) -------|
+  |                         |                          |
+  |                         |-- Settle payment ------->| (NOW charge)
+  |                         |-- Accrue tokens -------->| (fire &amp; forget)
+  |                         |                          |
+  |<-- Response + receipt --|                          |</div>
+
+    <h3>Key Services</h3>
+    <div class="card-grid">
+      <!-- TokenService -->
+      <div class="card">
+        <div class="card-title">TokenService</div>
+        <div class="card-subtitle">Token CRUD + atomic distribution</div>
+        <ul class="method-list">
+          <li><code>putItem()</code> / <code>getItem()</code> / <code>getItemBySlug()</code> <span class="method-desc">-- Standard CRUD</span></li>
+          <li><code>slugExists()</code> <span class="method-desc">-- Check slug uniqueness</span></li>
+          <li><code>incrementVirtualDistributedWithEarnings()</code> <span class="method-desc">-- THE critical atomic method: caps at threshold</span></li>
+          <li><code>addApiToToken()</code> / <code>scanItemsByBuilder()</code> <span class="method-desc">-- API management + builder queries</span></li>
+        </ul>
+      </div>
+      <!-- EarningsService -->
+      <div class="card">
+        <div class="card-title">EarningsService</div>
+        <div class="card-subtitle">Per-user token earnings tracking</div>
+        <ul class="method-list">
+          <li><code>incrementEarnings()</code> <span class="method-desc">-- Add tokens to user's balance</span></li>
+          <li><code>getEarningsByToken()</code> <span class="method-desc">-- All earnings for a token</span></li>
+          <li><code>getEarningsByUser()</code> <span class="method-desc">-- User's earnings across tokens</span></li>
+          <li><code>markAsClaimed()</code> <span class="method-desc">-- Flag as claimed after Merkle proof</span></li>
+        </ul>
+      </div>
+      <!-- MerkleTreeService -->
+      <div class="card">
+        <div class="card-title">MerkleTreeService</div>
+        <div class="card-subtitle">Merkle tree storage for on-chain claims</div>
+        <ul class="method-list">
+          <li><code>storeMerkleTree()</code> <span class="method-desc">-- Persist tree leaves + root</span></li>
+          <li><code>getMerkleTree()</code> <span class="method-desc">-- Retrieve stored tree</span></li>
+          <li><code>generateProof()</code> <span class="method-desc">-- keccak256 proof for user claim</span></li>
+        </ul>
+      </div>
+      <!-- MetricsService -->
+      <div class="card">
+        <div class="card-title">MetricsService</div>
+        <div class="card-subtitle">API call metrics and analytics</div>
+        <ul class="method-list">
+          <li><code>recordApiCall()</code> <span class="method-desc">-- Rolling 100-call window tracking</span></li>
+          <li><code>getServerMetrics()</code> <span class="method-desc">-- Aggregate server stats</span></li>
+          <li><code>calculatePercentile()</code> <span class="method-desc">-- P95 latency calculation</span></li>
+        </ul>
+      </div>
+      <!-- MultiChainPaymentService -->
+      <div class="card">
+        <div class="card-title">MultiChainPaymentService</div>
+        <div class="card-subtitle">EVM + Solana payment verification and settlement</div>
+        <ul class="method-list">
+          <li><code>verifyPaymentAuthorization()</code> <span class="method-desc">-- Check signature without settling</span></li>
+          <li><code>executePaymentTransfer()</code> <span class="method-desc">-- Settle via Thirdweb (EVM) or submit tx (Solana)</span></li>
+        </ul>
+      </div>
+      <!-- GraduationDispatcher -->
+      <div class="card">
+        <div class="card-title">GraduationDispatcher</div>
+        <div class="card-subtitle">Cloud Tasks dispatch with deduplication</div>
+        <ul class="method-list">
+          <li><code>dispatchGraduationTask()</code> <span class="method-desc">-- Named task dedup (gRPC ALREADY_EXISTS)</span></li>
+        </ul>
+      </div>
+      <!-- CacheService -->
+      <div class="card">
+        <div class="card-title">CacheService</div>
+        <div class="card-subtitle">Firestore-backed cache with TTL</div>
+        <ul class="method-list">
+          <li><code>getOrSet()</code> <span class="method-desc">-- Fetch cached or compute + cache</span></li>
+          <li><code>setCached()</code> / <code>invalidateCache()</code> <span class="method-desc">-- Manual cache management</span></li>
+          <li><span class="tag tag-blue">SHORT 1m</span> <span class="tag tag-green">MEDIUM 5m</span> <span class="tag tag-purple">LONG 10m</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Rate Limiting (4 Tiers)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th>Limit</th>
+            <th>Scope</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag tag-blue">Global</span></td>
+            <td>10,000 req/min</td>
+            <td>Entire platform</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-green">IP</span></td>
+            <td>5,000 req/min</td>
+            <td>Per IP address</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-purple">Wallet</span></td>
+            <td>1,000 req/min</td>
+            <td>Per wallet address</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-orange">API</span></td>
+            <td>500 req/min</td>
+            <td>Per API endpoint</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout">
+      <div class="callout-title">Response Headers</div>
+      <p>All rate-limited responses include: <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code>, <code>RateLimit-Reset</code>, and <code>Retry-After</code> (when 429 is returned).</p>
+    </div>
+
+    <h3>Payment Protocol (x402 v2)</h3>
+    <div class="card">
+      <h4>EVM (Base Sepolia)</h4>
+      <p>Uses EIP-3009 <code>TransferWithAuthorization</code> signed to the <strong>facilitator address</strong> (not the token address). The Thirdweb facilitator handles on-chain settlement and forwards payment to the token contract.</p>
+      <h4>Solana (Devnet)</h4>
+      <p>Uses a pre-signed SPL token transfer transaction. The backend deserializes and submits the transaction on-chain after builder success.</p>
+      <h4>Protocol Flow</h4>
+      <ol class="steps">
+        <li>Client makes initial API request (no payment header)</li>
+        <li>Backend returns <strong>402 Payment Required</strong> with fee details</li>
+        <li>Client signs payment authorization (EIP-712 for EVM, SPL transfer for Solana)</li>
+        <li>Client retries request with <code>PAYMENT-SIGNATURE</code> header (base64 JSON)</li>
+      </ol>
+    </div>
+
+    <h3>JWT Authentication for Builders</h3>
+    <div class="card">
+      <div class="table-wrap" style="margin:0">
+        <table>
+          <tbody>
+            <tr><td style="width:160px"><strong>Algorithm</strong></td><td>HS256</td></tr>
+            <tr><td><strong>Header</strong></td><td><code>X-IAO-Auth</code></td></tr>
+            <tr><td><strong>Shared Secret</strong></td><td><code>BUILDER_SECRET_PHRASE</code> env var</td></tr>
+            <tr><td><strong>Expiry</strong></td><td>5 minutes</td></tr>
+            <tr>
+              <td><strong>Payload</strong></td>
+              <td><code>{ iss: "iao-proxy", aud: &lt;endpoint&gt;, tokenAddress, exp: 5min }</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- ============================================================ -->
+  <!-- SECTION 3: FRONTEND (React/Vite)                              -->
+  <!-- ============================================================ -->
+  <div class="section" id="frontend">
+    <span class="section-number purple">Section 3</span>
+    <h2>Frontend (React/Vite)</h2>
+    <p class="section-desc">React single-page application with Thirdweb wallet integration, multi-chain support, and full API marketplace UI.</p>
+
+    <h3>File Structure</h3>
+    <pre><code>APIX402FE/
+├── src/
+│   ├── pages/
+│   │   ├── OverviewPage.tsx         <span style="color:#8b949e"># / - Global stats + leaderboard</span>
+│   │   ├── MarketplacePage.tsx      <span style="color:#8b949e"># /marketplace - Browse APIs</span>
+│   │   ├── APIDetailsPage.tsx       <span style="color:#8b949e"># /server/:slug - Server details + test</span>
+│   │   ├── SubmitAPIForm.tsx        <span style="color:#8b949e"># /submit - Register server + create token</span>
+│   │   ├── Dashboard.tsx            <span style="color:#8b949e"># /dashboard - Builder earnings + claims</span>
+│   │   ├── AgentMarketplace.tsx     <span style="color:#8b949e"># /agent-marketplace</span>
+│   │   ├── AgentComposerPage.tsx    <span style="color:#8b949e"># /agents - Create/edit agents</span>
+│   │   ├── ChatPage.tsx             <span style="color:#8b949e"># /chat - Chat with agents</span>
+│   │   └── NewChatPlayground.tsx    <span style="color:#8b949e"># /new-chat - Advanced testing</span>
+│   ├── hooks/
+│   │   ├── useX402Payment.ts        <span style="color:#8b949e"># CRITICAL - Payment authorization + API calls</span>
+│   │   ├── useClaimTokens.ts        <span style="color:#8b949e"># Merkle claim flow</span>
+│   │   ├── useFavorites.ts          <span style="color:#8b949e"># localStorage favorites</span>
+│   │   └── useDebounce.ts           <span style="color:#8b949e"># Search debounce</span>
+│   ├── contexts/
+│   │   ├── ChainContext.tsx          <span style="color:#8b949e"># Global chain selection</span>
+│   │   └── ToastContext.tsx          <span style="color:#8b949e"># Toast notifications</span>
+│   ├── contracts/
+│   │   ├── tokenFactory.ts          <span style="color:#8b949e"># EVM: Factory ABI + interaction</span>
+│   │   └── solanaIaoFactory.ts      <span style="color:#8b949e"># Solana: Program interaction + PDAs</span>
+│   ├── utils/
+│   │   └── api.ts                   <span style="color:#8b949e"># All backend API calls</span>
+│   ├── components/                  <span style="color:#8b949e"># APICard, ChainSelector, Spinner, etc.</span>
+│   ├── App.tsx                      <span style="color:#8b949e"># Root + routing + navigation</span>
+│   └── main.tsx                     <span style="color:#8b949e"># Entry point</span>
+├── firebase.json                    <span style="color:#8b949e"># Hosting config</span>
+├── vite.config.ts
+└── package.json</code></pre>
+
+    <h3>Pages &amp; Routes</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Route</th>
+            <th>Component</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/</code></td>
+            <td>OverviewPage</td>
+            <td>Global ecosystem stats, top 10 leaderboard</td>
+          </tr>
+          <tr>
+            <td><code>/marketplace</code></td>
+            <td>MarketplacePage</td>
+            <td>Browse servers with search, filter, sort, pagination</td>
+          </tr>
+          <tr>
+            <td><code>/server/:slug</code></td>
+            <td>APIDetailsPage</td>
+            <td>Server details, metrics, API testing, owner management</td>
+          </tr>
+          <tr>
+            <td><code>/submit</code></td>
+            <td>SubmitAPIForm</td>
+            <td>Register server + create on-chain token</td>
+          </tr>
+          <tr>
+            <td><code>/dashboard</code></td>
+            <td>Dashboard</td>
+            <td>Builder tab (earnings) + Consumer tab (claims)</td>
+          </tr>
+          <tr>
+            <td><code>/agent-marketplace</code></td>
+            <td>AgentMarketplace</td>
+            <td>Browse AI agents</td>
+          </tr>
+          <tr>
+            <td><code>/agents</code></td>
+            <td>AgentComposerPage</td>
+            <td>Create/edit agents with tool picker</td>
+          </tr>
+          <tr>
+            <td><code>/chat</code></td>
+            <td>ChatPage</td>
+            <td>Chat with agents</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Key Hook: useX402Payment</h3>
+    <div class="callout purple">
+      <div class="callout-title">Most Important Frontend Hook</div>
+      <p>Handles the complete payment + API call flow. This is the primary interface between the user's wallet and the backend proxy.</p>
+    </div>
+
+    <ol class="steps">
+      <li><strong>Make initial API request</strong> (no payment header)</li>
+      <li><strong>Receive 402 Payment Required</strong> response with fee details and facilitator address</li>
+      <li><strong>Sign payment authorization:</strong>
+        <br>-- EVM: EIP-712 <code>TransferWithAuthorization</code> to facilitator
+        <br>-- Solana: SPL token transfer instruction (signed)
+      </li>
+      <li><strong>Retry request</strong> with <code>PAYMENT-SIGNATURE</code> header (base64 JSON)</li>
+      <li><strong>Return API response</strong> data to the calling component</li>
+    </ol>
+
+    <h4>EVM Signing Details</h4>
+    <pre><code><span style="color:#8b949e">// EIP-712 TransferWithAuthorization message</span>
+{
+  from:        userAddress,           <span style="color:#8b949e">// payer wallet</span>
+  to:          facilitatorAddress,    <span style="color:#8b949e">// Thirdweb facilitator (NOT token address)</span>
+  value:       feeAmount,             <span style="color:#8b949e">// USDC amount in smallest unit</span>
+  validAfter:  now - 60s,             <span style="color:#8b949e">// grace window</span>
+  validBefore: now + 3600s,           <span style="color:#8b949e">// 1-hour expiry</span>
+  nonce:       randomBytes32          <span style="color:#8b949e">// unique per authorization</span>
+}
+
+<span style="color:#8b949e">// Domain: USDC on Base Sepolia</span></code></pre>
+
+    <h3>Token Creation Flow (from Frontend)</h3>
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-title"><span class="tag tag-blue">EVM</span> Token Creation</div>
+        <ol class="steps">
+          <li><strong>Call <code>IAOTokenFactory.createToken()</code></strong> via Thirdweb wallet</li>
+          <li><strong>Wait for receipt</strong>, parse <code>TokenCreated</code> event</li>
+          <li><strong>Extract token address</strong> from event logs</li>
+          <li><strong>Call <code>POST /api/register</code></strong> with <code>tokenAddress</code></li>
+        </ol>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="tag tag-purple">Solana</span> Token Creation</div>
+        <ol class="steps">
+          <li><strong>Build transaction</strong> via <code>createTokenTransaction()</code></li>
+          <li><strong>Sign with Phantom:</strong> <code>solana.signAndSendTransaction(tx)</code></li>
+          <li><strong>Confirm transaction</strong> on-chain</li>
+          <li><strong>Call <code>POST /api/register</code></strong> with mint address</li>
+        </ol>
+      </div>
+    </div>
+
+    <h3>Frontend Environment</h3>
+    <div class="card">
+      <div class="table-wrap" style="margin:0">
+        <table>
+          <tbody>
+            <tr>
+              <td style="width:200px"><strong>VITE_API_BASE_URL</strong></td>
+              <td>Backend URL (e.g., <code>http://localhost:3000</code>)</td>
+            </tr>
+            <tr>
+              <td><strong>Thirdweb Client ID</strong></td>
+              <td><code>3ff07d43789c566f11b0ce84e6cef5ac</code> (hardcoded)</td>
+            </tr>
+            <tr>
+              <td><strong>EVM Factory</strong></td>
+              <td><code>0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800</code></td>
+            </tr>
+            <tr>
+              <td><strong>Solana Program</strong></td>
+              <td><code>FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3>State Management</h3>
+    <div class="card-grid-4">
+      <div class="card">
+        <div class="card-title">ThirdwebProvider</div>
+        <div class="card-subtitle">EVM wallet connection and transaction signing</div>
+      </div>
+      <div class="card">
+        <div class="card-title">ChainProvider</div>
+        <div class="card-subtitle">Selected chain (persisted to localStorage)</div>
+      </div>
+      <div class="card">
+        <div class="card-title">ToastProvider</div>
+        <div class="card-subtitle">Global toast notifications</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Component State</div>
+        <div class="card-subtitle">useState for forms and loading states</div>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- ============================================================ -->
+  <!-- SECTION 4: CLOUD FUNCTIONS & AUTOMATIONS                      -->
+  <!-- ============================================================ -->
+  <div class="section" id="cloud-functions">
+    <span class="section-number orange">Section 4</span>
+    <h2>Cloud Functions &amp; Automations</h2>
+    <p class="section-desc">Four Cloud Functions handle on-chain operations: fee distribution and graduation for both EVM and Solana chains.</p>
+
+    <h3>Overview</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Function</th>
+            <th>Trigger</th>
+            <th>Frequency</th>
+            <th>Chain</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>fee-distribution-evm</code></td>
+            <td><span class="tag tag-yellow">Cloud Scheduler</span></td>
+            <td>Weekly</td>
+            <td><span class="tag tag-blue">EVM</span></td>
+            <td>Distribute USDC fees</td>
+          </tr>
+          <tr>
+            <td><code>fee-distribution-solana</code></td>
+            <td><span class="tag tag-yellow">Cloud Scheduler</span></td>
+            <td>Weekly</td>
+            <td><span class="tag tag-purple">Solana</span></td>
+            <td>Distribute USDC fees</td>
+          </tr>
+          <tr>
+            <td><code>graduation-evm</code></td>
+            <td><span class="tag tag-orange">Cloud Tasks</span></td>
+            <td>On-demand</td>
+            <td><span class="tag tag-blue">EVM</span></td>
+            <td>Graduate token + deploy liquidity</td>
+          </tr>
+          <tr>
+            <td><code>graduation-solana</code></td>
+            <td><span class="tag tag-orange">Cloud Tasks</span></td>
+            <td>On-demand</td>
+            <td><span class="tag tag-purple">Solana</span></td>
+            <td>Graduate token + deploy liquidity</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Fee Distribution Flow</h3>
+    <div class="diagram">Cloud Scheduler (cron: 0 0 * * 0 = Sunday midnight UTC)
+       |
+       v
+POST /internal/trigger-fee-distribution (Backend)
+       |
+       +-- Groups tokens by chain
+       |
+       +-------------------------+
+       |                         |
+       v                         v
+fee-distribution-evm        fee-distribution-solana
+       |                         |
+       v                         v
+TokenDistributor            distribute_fees
+.distributeFees()           instruction (per token)
+       |                         |
+       +-------------------------+
+       |
+       v
+POST /internal/fee-distribution-confirm
+(Clears pendingFeesForDistribution)</div>
+
+    <h3>Graduation Flow</h3>
+    <div class="diagram">API call crosses graduation threshold
+       |
+       v
+graduationDispatcher: create named Cloud Task
+(graduate-{tokenAddress} -- dedup via gRPC ALREADY_EXISTS)
+       |
+       v
+POST /internal/graduate/:tokenAddress (Backend)
+  1. Acquire Firestore lock (5-min TTL)
+  2. Fetch all token-earnings entries
+  3. Build Merkle tree (keccak256)
+  4. Store tree in Firestore
+  5. Set merkleRoot on token doc
+       |
+       +-------------------------+
+       |                         |
+       v                         v
+graduation-evm              graduation-solana
+  graduateToken               graduate_with_merkle
+  WithMerkle()                instruction
+  + distributeFees()          + distribute_fees
+  (Uniswap V4, 25M gas)      instruction
+       |                         |
+       +-------------------------+
+       |
+       v
+POST /internal/graduation-confirm/:tokenAddress
+(Sets graduated = true)</div>
+
+    <h3>Race Condition Protection</h3>
+    <div class="callout warning">
+      <div class="callout-title">3 Layers of Protection Against Concurrent Graduation</div>
+      <p>
+        <strong>Layer 1: Cloud Tasks named task deduplication</strong> -- Duplicate dispatch returns gRPC <code>ALREADY_EXISTS</code>; the second dispatch is silently rejected.
+        <br><br>
+        <strong>Layer 2: Firestore atomic transaction</strong> -- <code>incrementVirtualDistributedWithEarnings()</code> uses a Firestore transaction that caps <code>virtualDistributed</code> at the graduation threshold. Even concurrent calls cannot exceed it.
+        <br><br>
+        <strong>Layer 3: Graduation lock</strong> -- A Firestore document with a 5-minute TTL prevents concurrent execution of the graduation handler. If the lock exists and is not expired, subsequent calls are rejected.
+      </p>
+    </div>
+
+    <h3>Cloud Function Details</h3>
+    <div class="card-grid">
+      <!-- fee-distribution-evm -->
+      <div class="card">
+        <div class="card-title"><span class="tag tag-blue">EVM</span> fee-distribution-evm</div>
+        <div class="card-subtitle">cloud-functions/fee-distribution-evm/</div>
+        <ul class="method-list">
+          <li><strong>Export:</strong> <code>distributeFeesEvm</code></li>
+          <li><strong>On-chain call:</strong> <code>TokenDistributor.distributeFees(tokens, feeAmounts)</code></li>
+          <li><strong>Gas:</strong> ~500k per token</li>
+          <li><strong>Callback:</strong> <code>POST /internal/fee-distribution-confirm</code></li>
+        </ul>
+        <h4>Environment Variables</h4>
+        <ul class="method-list">
+          <li><code>AUTOMATION_PRIVATE_KEY</code> <span class="method-desc">-- hex-encoded</span></li>
+          <li><code>RPC_URL</code> <span class="method-desc">-- Base Sepolia RPC</span></li>
+          <li><code>TOKEN_DISTRIBUTOR</code> <span class="method-desc">-- Contract address</span></li>
+          <li><code>BACKEND_URL</code> <span class="method-desc">-- Cloud Run URL</span></li>
+          <li><code>FEE_DISTRIBUTION_SECRET</code> <span class="method-desc">-- Shared secret</span></li>
+        </ul>
+      </div>
+      <!-- fee-distribution-solana -->
+      <div class="card">
+        <div class="card-title"><span class="tag tag-purple">Solana</span> fee-distribution-solana</div>
+        <div class="card-subtitle">cloud-functions/fee-distribution-solana/</div>
+        <ul class="method-list">
+          <li><strong>Export:</strong> <code>distributeFeesSolana</code></li>
+          <li><strong>On-chain call:</strong> <code>distribute_fees</code> instruction per token</li>
+          <li><strong>Derives PDAs:</strong> factory, feeConfig, vault, vaultAuthority</li>
+          <li><strong>Splits:</strong> builder + team + buyback</li>
+          <li><strong>Callback:</strong> <code>POST /internal/fee-distribution-confirm</code></li>
+        </ul>
+        <h4>Environment Variables</h4>
+        <ul class="method-list">
+          <li><code>AUTOMATION_PRIVATE_KEY</code> <span class="method-desc">-- base58-encoded</span></li>
+          <li><code>SOLANA_RPC_URL</code> <span class="method-desc">-- Devnet RPC</span></li>
+          <li><code>IAO_PROGRAM_ID</code> <span class="method-desc">-- FpCX6...n6jwA</span></li>
+          <li><code>BACKEND_URL</code> <span class="method-desc">-- Cloud Run URL</span></li>
+          <li><code>FEE_DISTRIBUTION_SECRET</code> <span class="method-desc">-- Shared secret</span></li>
+        </ul>
+      </div>
+      <!-- graduation-evm -->
+      <div class="card">
+        <div class="card-title"><span class="tag tag-blue">EVM</span> graduation-evm</div>
+        <div class="card-subtitle">cloud-functions/graduation-evm/</div>
+        <ul class="method-list">
+          <li><strong>Export:</strong> <code>graduateEvm</code></li>
+          <li><strong>On-chain call:</strong> <code>TokenDistributor.graduateTokenWithMerkle(token, merkleRoot, virtualDistributed, feesCollected)</code></li>
+          <li><strong>Gas limit:</strong> <span class="tag tag-red">25M</span> (Uniswap V4 pool init needs ~20M)</li>
+          <li><strong>Also calls:</strong> <code>distributeFees()</code> for post-graduation fee split</li>
+          <li><strong>Callback:</strong> <code>POST /internal/graduation-confirm/:tokenAddress</code></li>
+        </ul>
+        <h4>Environment Variables</h4>
+        <ul class="method-list">
+          <li><code>AUTOMATION_PRIVATE_KEY</code> <span class="method-desc">-- hex-encoded</span></li>
+          <li><code>RPC_URL</code> <span class="method-desc">-- Base Sepolia RPC</span></li>
+          <li><code>TOKEN_DISTRIBUTOR</code> <span class="method-desc">-- Contract address</span></li>
+          <li><code>BACKEND_URL</code> <span class="method-desc">-- Cloud Run URL</span></li>
+          <li><code>GRADUATION_INTERNAL_SECRET</code> <span class="method-desc">-- Shared secret</span></li>
+        </ul>
+      </div>
+      <!-- graduation-solana -->
+      <div class="card">
+        <div class="card-title"><span class="tag tag-purple">Solana</span> graduation-solana</div>
+        <div class="card-subtitle">cloud-functions/graduation-solana/</div>
+        <ul class="method-list">
+          <li><strong>Export:</strong> <code>graduateSolana</code></li>
+          <li><strong>Two-step:</strong> <code>graduate_with_merkle()</code> then <code>distribute_fees()</code></li>
+          <li><strong>Borsh encoding</strong> for merkle root (32-byte fixed buffer)</li>
+          <li><strong>Derives PDAs:</strong> factory, mintAuthority, feeConfig, vault, vaultAuthority</li>
+          <li><strong>Callback:</strong> <code>POST /internal/graduation-confirm/:tokenAddress</code></li>
+        </ul>
+        <h4>Environment Variables</h4>
+        <ul class="method-list">
+          <li><code>AUTOMATION_PRIVATE_KEY</code> <span class="method-desc">-- base58-encoded</span></li>
+          <li><code>SOLANA_RPC_URL</code> <span class="method-desc">-- Devnet RPC</span></li>
+          <li><code>IAO_PROGRAM_ID</code> <span class="method-desc">-- FpCX6...n6jwA</span></li>
+          <li><code>BACKEND_URL</code> <span class="method-desc">-- Cloud Run URL</span></li>
+          <li><code>GRADUATION_INTERNAL_SECRET</code> <span class="method-desc">-- Shared secret</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Cloud Scheduler Setup</h3>
+    <pre><code>gcloud scheduler jobs create http fee-distribution-weekly \
+  --schedule="0 0 * * 0" \
+  --uri="https://your-backend.run.app/internal/trigger-fee-distribution" \
+  --http-method=POST \
+  --headers="Content-Type=application/json,X-Fee-Distribution-Secret=YOUR_SECRET" \
+  --time-zone="UTC"</code></pre>
+
+    <h3>Cloud Tasks Queue Setup</h3>
+    <pre><code>gcloud tasks queues create graduation-queue --location=us-central1</code></pre>
+
+    <h3>Internal Endpoints</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>Triggered By</th>
+            <th>Auth Header</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>POST /internal/trigger-fee-distribution</code></td>
+            <td>Cloud Scheduler</td>
+            <td><code>X-Fee-Distribution-Secret</code></td>
+            <td>Fetch tokens, group by chain, call functions</td>
+          </tr>
+          <tr>
+            <td><code>POST /internal/graduate/:tokenAddress</code></td>
+            <td>Cloud Tasks</td>
+            <td><code>X-Graduation-Secret</code></td>
+            <td>Build Merkle tree, invoke Cloud Function</td>
+          </tr>
+          <tr>
+            <td><code>POST /internal/graduation-confirm/:tokenAddress</code></td>
+            <td>Cloud Function</td>
+            <td><code>X-Graduation-Secret</code></td>
+            <td>Mark graduated = true</td>
+          </tr>
+          <tr>
+            <td><code>POST /internal/fee-distribution-confirm</code></td>
+            <td>Cloud Function</td>
+            <td><code>X-Fee-Distribution-Secret</code></td>
+            <td>Clear pending fees</td>
+          </tr>
+          <tr>
+            <td><code>GET /internal/graduation-earnings/:tokenAddress</code></td>
+            <td>Solana Cloud Fn</td>
+            <td><code>X-Graduation-Secret</code></td>
+            <td>Return earnings breakdown</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+
+<!-- SECTION 5: EVM SMART CONTRACTS -->
+<div class="section" id="section-5">
+  <h2>5. EVM Smart Contracts (Solidity)</h2>
+
+  <h3>5.1 Contract Overview</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Contract</th>
+        <th>File</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>IAOToken.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>V1: ERC20 + bonding curve + EIP-3009 + Uniswap V4 liquidity</td>
+      </tr>
+      <tr>
+        <td><code>IAOTokenV2.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>V2: Optimized (under 24KB) + Merkle claims, delegates liquidity to helper</td>
+      </tr>
+      <tr>
+        <td><code>IAOTokenFactory.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>Creates tokens via minimal proxy clones, manages payment token configs</td>
+      </tr>
+      <tr>
+        <td><code>TokenDistributor.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>Batch distribute tokens, graduate, fee distribution. ~$0.01-0.02/user</td>
+      </tr>
+      <tr>
+        <td><code>LpGuardHook.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>Uniswap V4 hook: whitelist pool initializer</td>
+      </tr>
+      <tr>
+        <td><code>LpGuardHookDeployer.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>Mine valid hook addresses (BEFORE_INITIALIZE_FLAG)</td>
+      </tr>
+      <tr>
+        <td><code>IAOLiquidityHelper.sol</code></td>
+        <td><code>contracts/IAO/</code></td>
+        <td>External Uniswap V4 pool creation (extracted for size)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>5.2 IAOTokenFactory &mdash; How Tokens Are Created</h3>
+  <p>
+    The factory uses <code>Clones.cloneDeterministic()</code> to deploy minimal proxy contracts
+    at deterministic addresses. The salt is derived from the server slug:
+  </p>
+  <pre><code>salt = keccak256(abi.encodePacked(serverSlug))</code></pre>
+  <p>Each clone is initialized with:</p>
+  <ul>
+    <li><strong>name</strong> and <strong>symbol</strong> &mdash; token identity</li>
+    <li><strong>slug</strong> &mdash; server slug for lookup</li>
+    <li><strong>builder</strong> &mdash; the API developer's address</li>
+    <li><strong>paymentToken</strong> &mdash; USDC address</li>
+    <li><strong>graduationThreshold</strong> &mdash; 62.5% of 1B tokens</li>
+  </ul>
+  <p>1 billion tokens are minted to the <code>TokenDistributor</code> contract on creation. The factory emits:</p>
+  <pre><code>event TokenCreated(string serverSlug, address builder, address token);</code></pre>
+
+  <h4>PaymentTokenInfo Struct</h4>
+  <pre><code>struct PaymentTokenInfo {
+    uint256 price;                    // Tokens per payment token (e.g., 25000 per USDC)
+    address paymentToken;
+    uint256 paymentTokenDecimals;     // 6 for USDC
+    uint256 graduationThreshold;      // Basis points (6250 = 62.5%)
+    uint160 sqrtPriceX96Token0;       // Initial sqrt price (token is token0)
+    uint160 sqrtPriceX96Token1;       // Initial sqrt price (token is token1)
+}</code></pre>
+
+  <h3>5.3 IAOTokenV2 &mdash; Key Functions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Function</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>claim(uint256 amount, bytes32[] proof)</code></td>
+        <td>Verify Merkle proof, transfer tokens from distributor to user</td>
+      </tr>
+      <tr>
+        <td><code>graduateWithMerkle(merkleRoot, virtualDistributed, feesCollected)</code></td>
+        <td>Atomic graduation: set Merkle root + deploy liquidity in one transaction</td>
+      </tr>
+      <tr>
+        <td><code>distributePendingFees(feeAmount)</code></td>
+        <td>Called by TokenDistributor to split fees to builder/team/buyback</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Key state variables:</p>
+  <ul>
+    <li><code>merkleRoot</code> (bytes32) &mdash; root of the distribution tree</li>
+    <li><code>hasClaimed</code> (mapping(address =&gt; bool)) &mdash; prevents double claims</li>
+  </ul>
+
+  <h3>5.4 TokenDistributor &mdash; The Distribution Hub</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Function</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>distribute(tokens, receivers, amounts, txHashes)</code></td>
+        <td>Batch distribute across multiple tokens</td>
+      </tr>
+      <tr>
+        <td><code>graduateTokenWithMerkle(token, merkleRoot, virtual, fees)</code></td>
+        <td>Trigger graduation with Merkle root</td>
+      </tr>
+      <tr>
+        <td><code>distributeFees(tokens, feeAmounts)</code></td>
+        <td>Weekly fee distribution across tokens</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout callout-info">
+    <strong>Idempotency:</strong> All distributions are tracked via a <code>processed</code> mapping keyed by transaction hash.
+    Re-submitting the same txHash is a no-op.
+  </div>
+  <p>
+    <strong>Cost:</strong> ~$0.01&ndash;0.02 per user &nbsp;|&nbsp;
+    <strong>Throughput:</strong> ~1.5M users/hour
+  </p>
+
+  <h3>5.5 Liquidity Deployment at Graduation</h3>
+  <p>When <code>totalTokensDistributed &gt;= graduationThreshold</code>, the following sequence executes:</p>
+  <ol>
+    <li>Deploy <code>LpGuardHook</code> (whitelists IAOToken as pool initializer)</li>
+    <li>Initialize Uniswap V4 pool: fee <code>10000</code> (1%), tick spacing <code>200</code></li>
+    <li>Mint full-range LP position: <strong>375M remaining tokens</strong> + <strong>60% of collected fees</strong> (USDC)</li>
+    <li>LP NFT owned by IAOToken contract (protocol-owned liquidity)</li>
+    <li><code>LpGuardHook</code> prevents unauthorized pool re-initialization</li>
+  </ol>
+
+  <h3>5.6 Fee Distribution Logic</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Builder</th>
+        <th>Team</th>
+        <th>Liquidity / Buyback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Pre-Graduation</strong></td>
+        <td>10% (1000 bp)</td>
+        <td>30% (3000 bp)</td>
+        <td>60% (6000 bp) &mdash; reserved for pool</td>
+      </tr>
+      <tr>
+        <td><strong>Post-Graduation</strong></td>
+        <td>70% (7000 bp)</td>
+        <td>10% (1000 bp)</td>
+        <td>20% (2000 bp) &mdash; buyback</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>5.7 Deployed Addresses (Base Sepolia)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Contract</th>
+        <th>Address</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>IAOTokenFactory</td>
+        <td><code>0x5a40F7f30b25D07aB1C06dEB7400554Bc20f8ad4</code></td>
+      </tr>
+      <tr>
+        <td>USDC (Mock)</td>
+        <td><code>0x036CbD53842c5426634e7929541eC2318f3dCF7e</code></td>
+      </tr>
+      <tr>
+        <td>Uniswap V4 Pool Manager</td>
+        <td><code>0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408</code></td>
+      </tr>
+      <tr>
+        <td>Position Manager</td>
+        <td><code>0x4B2C77d209D3405F41a037Ec6c77F7F5b8e2ca80</code></td>
+      </tr>
+      <tr>
+        <td>Permit2</td>
+        <td><code>0x000000000022D473030F116dDEE9F6B43aC78BA3</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>5.8 Build &amp; Deploy</h3>
+  <pre><code>cd ~/hyperpie
+forge build
+forge test
+forge test --gas-report
+
+# Deploy full V2 system
+forge script contracts/IAO/scripts/deployIAOV2.s.sol:DeployIAOV2 \
+  --rpc-url $BASE_SEPOLIA_RPC_URL --private-key $PRIVATE_KEY \
+  --broadcast --verify</code></pre>
+  <p>
+    <strong>foundry.toml key settings:</strong>
+    <code>evm_version = "cancun"</code> (required for Uniswap V4 transient storage),
+    <code>via_ir = true</code> (enables IR-based code generation for optimization).
+  </p>
+</div>
+
+<!-- SECTION 6: SOLANA PROGRAM -->
+<div class="section" id="section-6">
+  <h2>6. Solana Program (Rust / Anchor)</h2>
+
+  <h3>6.1 Program Overview</h3>
+  <table>
+    <tbody>
+      <tr><td><strong>Program ID</strong></td><td><code>FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA</code></td></tr>
+      <tr><td><strong>Framework</strong></td><td>Anchor 0.29 / CLI 0.32.1</td></tr>
+      <tr><td><strong>Location</strong></td><td><code>~/hyperpie/contracts/IAO/solana-program/</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.2 State Accounts</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Account</th>
+        <th>PDA Seeds</th>
+        <th>Key Fields</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>FactoryState</code></td>
+        <td><code>["factory"]</code></td>
+        <td>admin, automation_wallet, payment_token_mint, payment_token_price, total_tokens_created</td>
+      </tr>
+      <tr>
+        <td><code>IaoTokenState</code></td>
+        <td><code>["iao-token", slug]</code></td>
+        <td>server_slug, mint, builder, graduation_threshold (625M), total_tokens_distributed, is_graduated, merkle_root</td>
+      </tr>
+      <tr>
+        <td><code>FeeConfig</code></td>
+        <td><code>["fee-config"]</code></td>
+        <td>team_address, buyback_address, pre/post grad fee splits (basis points)</td>
+      </tr>
+      <tr>
+        <td><code>ClaimRecord</code></td>
+        <td><code>["claim", token_state, user]</code></td>
+        <td>token_state, user, amount, claimed_at</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h4>Additional PDAs</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>PDA</th>
+        <th>Seeds</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Mint</td>
+        <td><code>["mint", slug]</code></td>
+        <td>SPL token mint (9 decimals)</td>
+      </tr>
+      <tr>
+        <td>Mint Authority</td>
+        <td><code>["mint-authority", token_state]</code></td>
+        <td>Authority that signs mint operations</td>
+      </tr>
+      <tr>
+        <td>Vault</td>
+        <td><code>["vault", token_state]</code></td>
+        <td>USDC vault (associated token account)</td>
+      </tr>
+      <tr>
+        <td>Vault Authority</td>
+        <td><code>["vault-authority", token_state]</code></td>
+        <td>Authority that signs vault transfers</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>6.3 All 10 Instructions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Instruction</th>
+        <th>Authorization</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td><code>initialize_factory</code></td><td>Creator</td><td>One-time setup: admin, payment token, price</td></tr>
+      <tr><td>2</td><td><code>create_token</code></td><td>Builder</td><td>Create SPL token + IaoTokenState PDA</td></tr>
+      <tr><td>3</td><td><code>initialize_token_vault</code></td><td>Builder</td><td>Create USDC vault (same TX as create_token)</td></tr>
+      <tr><td>4</td><td><code>deploy_liquidity</code></td><td>Builder / Admin / Automation</td><td>Mark graduated (Raydium CLMM placeholder)</td></tr>
+      <tr><td>5</td><td><code>update_automation_wallet</code></td><td>Admin</td><td>Change Lambda automation wallet</td></tr>
+      <tr><td>6</td><td><code>update_payment_token_price</code></td><td>Admin</td><td>Adjust token pricing</td></tr>
+      <tr><td>7</td><td><code>initialize_fee_config</code></td><td>Admin</td><td>Set fee split percentages (one-time)</td></tr>
+      <tr><td>8</td><td><code>distribute_fees</code></td><td>Automation</td><td>Distribute accumulated USDC from vault</td></tr>
+      <tr><td>9</td><td><code>graduate_with_merkle</code></td><td>Automation</td><td>Set Merkle root, sync DB state, mark graduated</td></tr>
+      <tr><td>10</td><td><code>merkle_claim</code></td><td>User</td><td>Claim tokens via Merkle proof</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.4 Merkle Claim Verification</h3>
+  <p>Leaf hash construction (matches backend generation):</p>
+  <pre><code>// Leaf data: 32-byte pubkey || 8-byte little-endian amount
+leaf_data = pubkey_32bytes || amount_u64_le
+
+// Double-hash for second preimage resistance
+inner_hash = keccak256(leaf_data)
+leaf = keccak256(inner_hash)</code></pre>
+  <p>Proof verification walks sorted pair hashes upward to the root.</p>
+
+  <h3>6.5 Token Economics</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Parameter</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Total Supply</td><td>1,000,000,000 tokens (9 decimals)</td></tr>
+      <tr><td>Graduation Threshold</td><td>62.5% = 625,000,000 tokens = <code>625000000000000000</code> (u64)</td></tr>
+      <tr><td>Token Calculation</td><td><code>fee * 1000</code> (converting USDC 6 dec to token 9 dec)</td></tr>
+      <tr><td>Example</td><td>1 USDC fee = 1,000 tokens</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.6 Fee Distribution (Solana)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Builder</th>
+        <th>Team</th>
+        <th>Liquidity / Buyback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Pre-Graduation</strong></td>
+        <td>10%</td>
+        <td>30%</td>
+        <td>60%</td>
+      </tr>
+      <tr>
+        <td><strong>Post-Graduation</strong></td>
+        <td>70%</td>
+        <td>10%</td>
+        <td>20%</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Formula: <code>amount = (total_fee * basis_points) / 10000</code></p>
+
+  <h3>6.7 Build &amp; Deploy</h3>
+  <pre><code>cd ~/hyperpie/contracts/IAO/solana-program
+anchor build       # "IDL doesn't exist" warning is safe to ignore
+anchor test
+anchor deploy --provider.cluster devnet \
+  --provider.wallet ~/.config/solana/deploy-wallet.json</code></pre>
+
+  <h3>6.8 Gotchas</h3>
+  <div class="callout callout-warning">
+    <strong>Solana-Specific Pitfalls:</strong>
+    <ul>
+      <li><strong>4KB BPF stack limit:</strong> Split instructions with many <code>init</code> accounts into separate instructions (can be in the same transaction).</li>
+      <li><strong>Case sensitivity:</strong> Solana addresses are base58 and CASE SENSITIVE. Never call <code>.toLowerCase()</code> on them.</li>
+      <li><strong>Version mismatch:</strong> Anchor 0.29 + CLI 0.32.1 version mismatch warnings are benign and can be ignored.</li>
+      <li><strong>Keccak vs SHA-3:</strong> <code>keccak::hash</code> produces original Keccak-256 (same as Ethereum's <code>keccak256</code>), NOT the NIST SHA-3 standard.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- SECTION 7: TOKEN LIFECYCLE & BONDING CURVE -->
+<div class="section" id="section-7">
+  <h2>7. Token Lifecycle &amp; Bonding Curve</h2>
+
+  <h3>7.1 Lifecycle Overview</h3>
+  <div class="flow-diagram">
+    <div class="flow-step">CREATE</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">BONDING</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">GRADUATE</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">CLAIM</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">TRADE</div>
+  </div>
+
+  <h3>7.2 Phase 1: Token Creation</h3>
+  <p>Two-step registration process:</p>
+  <ol>
+    <li><strong>Validate:</strong> Frontend sends <code>POST /api/register</code> without <code>tokenAddress</code>. Backend checks slug uniqueness, API URL reachability (must return 200), and no duplicate endpoints.</li>
+    <li><strong>On-chain:</strong> Frontend creates the token via <code>Factory.createToken()</code> (EVM) or <code>create_token</code> + <code>initialize_token_vault</code> instructions (Solana).</li>
+    <li><strong>Register:</strong> Frontend sends <code>POST /api/register</code> again with <code>tokenAddress</code>. Backend stores token metadata in Firestore.</li>
+  </ol>
+
+  <h3>7.3 Phase 2: Bonding Curve</h3>
+  <p>Formula:</p>
+  <pre><code>tokensEarned = (fee x paymentTokenPrice) / 10^paymentTokenDecimals</code></pre>
+  <p><strong>Example calculation:</strong></p>
+  <table>
+    <tbody>
+      <tr><td>Fee</td><td><code>10000</code> (0.01 USDC, 6 decimals)</td></tr>
+      <tr><td>Price</td><td><code>25,000,000,000,000,000,000,000</code> (25k tokens per USDC)</td></tr>
+      <tr><td>Decimals</td><td><code>6</code></td></tr>
+      <tr><td><strong>Result</strong></td><td><strong>250 tokens</strong> (18 decimals on EVM)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Atomic Update: incrementVirtualDistributedWithEarnings()</h4>
+  <p>A single Firestore transaction updates BOTH the token document AND the earnings document:</p>
+  <ul>
+    <li>Caps at graduation threshold (no overflow past 62.5%)</li>
+    <li>Tracks: <code>virtualTokensDistributed</code>, <code>totalFeesCollected</code>, <code>pendingFeesForDistribution</code></li>
+  </ul>
+
+  <h3>7.4 Graduation Thresholds</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Chain</th>
+        <th>Threshold</th>
+        <th>Raw Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>EVM</td>
+        <td>625M tokens</td>
+        <td><code>625000000000000000000000000</code> (18 decimals)</td>
+      </tr>
+      <tr>
+        <td>Solana</td>
+        <td>625M tokens</td>
+        <td><code>625000000000000000</code> (9 decimals)</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Override for testing: set <code>TEST_GRADUATION_THRESHOLD</code> environment variable.</p>
+
+  <h3>7.5 Phase 3: Graduation</h3>
+  <p>When <code>virtualTokensDistributed &gt;= threshold</code>:</p>
+  <ol>
+    <li><strong>Dispatch Cloud Task</strong> (dedup via named task to prevent duplicates)</li>
+    <li><strong>Acquire graduation lock</strong> (5-minute TTL in Firestore)</li>
+    <li><strong>Build Merkle tree</strong> from all <code>token-earnings</code> entries</li>
+    <li><strong>Compute leaf hashes:</strong>
+      <ul>
+        <li>EVM: <code>ABI.encode(['address', 'uint256'], [user, amount])</code> &mdash; OpenZeppelin-compatible</li>
+        <li>Solana: <code>keccak256(keccak256(pubkey_32bytes || amount_u64_le))</code> &mdash; double-hashed</li>
+      </ul>
+    </li>
+    <li><strong>Store tree</strong> in Firestore <code>merkle-trees</code> collection</li>
+    <li><strong>Invoke Cloud Function</strong> for on-chain graduation</li>
+    <li><strong>Cloud Function:</strong> set Merkle root + deploy liquidity atomically</li>
+  </ol>
+
+  <h3>7.6 Phase 4: Claiming</h3>
+  <ol>
+    <li><code>GET /api/claim/:serverSlug/:userAddress</code> &mdash; returns Merkle proof and amount</li>
+    <li>User calls contract: <code>claim(amount, proof[])</code> on EVM, <code>merkle_claim</code> on Solana</li>
+    <li>Backend marks <code>claimed = true</code> in <code>token-earnings</code></li>
+  </ol>
+
+  <h3>7.7 Phase 5: Trading</h3>
+  <p>Post-graduation, tokens trade on decentralized exchanges:</p>
+  <ul>
+    <li><strong>EVM:</strong> Uniswap V4 (protocol-owned liquidity, LP NFT held by contract)</li>
+    <li><strong>Solana:</strong> Raydium CLMM (placeholder for future implementation)</li>
+  </ul>
+</div>
+
+<!-- SECTION 8: FEE DISTRIBUTION SYSTEM -->
+<div class="section" id="section-8">
+  <h2>8. Fee Distribution System</h2>
+
+  <h3>8.1 Fee Accumulation</h3>
+  <p>Every successful API call adds to two counters on the token document:</p>
+  <ul>
+    <li><code>totalFeesCollected</code> &mdash; cumulative USDC earned (never decremented)</li>
+    <li><code>pendingFeesForDistribution</code> &mdash; USDC not yet distributed (reset after distribution)</li>
+  </ul>
+
+  <h3>8.2 Weekly Distribution Flow</h3>
+  <ol>
+    <li><strong>Cloud Scheduler</strong> triggers every Sunday at midnight UTC</li>
+    <li>Backend fetches all non-graduated tokens with <code>pendingFeesForDistribution &gt; 0</code></li>
+    <li>Groups tokens by <code>chainId</code></li>
+    <li>Calls the appropriate Cloud Function (EVM or Solana)</li>
+    <li>Cloud Function executes on-chain fee distribution</li>
+    <li>Callback to backend clears <code>pendingFeesForDistribution</code></li>
+  </ol>
+
+  <h3>8.3 Fee Split</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>Builder</th>
+        <th>Team</th>
+        <th>Liquidity / Buyback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Pre-Graduation</strong></td>
+        <td>10%</td>
+        <td>30%</td>
+        <td>60% (reserved for liquidity pool)</td>
+      </tr>
+      <tr>
+        <td><strong>Post-Graduation</strong></td>
+        <td>70%</td>
+        <td>10%</td>
+        <td>20% (token buyback)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>8.4 On-Chain Execution</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Chain</th>
+        <th>Method</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>EVM</strong></td>
+        <td><code>TokenDistributor.distributeFees(address[] tokens, uint256[] feeAmounts)</code></td>
+      </tr>
+      <tr>
+        <td><strong>Solana</strong></td>
+        <td><code>distribute_fees</code> instruction per token (transfers from vault PDA to builder/team/buyback accounts)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- SECTION 9: DEPLOYMENT GUIDE -->
+<div class="section" id="section-9">
+  <h2>9. Deployment Guide</h2>
+
+  <h3>9.1 Prerequisites</h3>
+  <ul>
+    <li>Node.js 20+ and Yarn</li>
+    <li><code>gcloud</code> CLI authenticated to the GCP project</li>
+    <li>Foundry (forge, cast) for EVM contract compilation and deployment</li>
+    <li>Anchor CLI 0.29+ for Solana program builds</li>
+    <li>Solana CLI 1.17+ for keypair management and cluster interaction</li>
+  </ul>
+
+  <h3>9.2 Deployment Order</h3>
+  <ol>
+    <li><strong>Deploy smart contracts</strong> &mdash; EVM via Foundry, Solana via Anchor</li>
+    <li><strong>Set up GCP secrets:</strong> <code>./setup-secrets.sh</code></li>
+    <li><strong>Set up Firestore indexes:</strong> <code>./setup-firestore.sh</code></li>
+    <li><strong>Deploy backend to Cloud Run:</strong> <code>./deploy-cloud-run.sh</code></li>
+    <li><strong>Deploy Cloud Functions:</strong> <code>./deploy-cloud-functions.sh</code></li>
+    <li><strong>Create Cloud Tasks queue</strong> (for graduation task dispatch)</li>
+    <li><strong>Create Cloud Scheduler job</strong> (for weekly fee distribution)</li>
+    <li><strong>Deploy frontend:</strong> <code>cd APIX402FE && npm run build && firebase deploy --only hosting</code></li>
+    <li><strong>Seed chain configs</strong> (backend auto-seeds on startup)</li>
+  </ol>
+
+  <h3>9.3 Backend (Cloud Run)</h3>
+  <pre><code>./deploy-cloud-run.sh
+
+# Or manually:
+gcloud run deploy apix-backend \
+  --source . --region us-central1 \
+  --allow-unauthenticated \
+  --memory=512Mi --cpu=1 --timeout=300 \
+  --min-instances=1 --max-instances=10</code></pre>
+
+  <h3>9.4 Cloud Functions</h3>
+  <pre><code>./deploy-cloud-functions.sh
+# Deploys all 4 functions with secrets from Secret Manager:
+#   - graduation-evm
+#   - graduation-solana
+#   - fee-distribution-evm
+#   - fee-distribution-solana</code></pre>
+
+  <h3>9.5 Frontend</h3>
+  <pre><code>cd /home/error0180/APIX402FE
+npm run build
+firebase deploy --only hosting</code></pre>
+
+  <h3>9.6 Setup Scripts</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Script</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>setup-secrets.sh</code></td>
+        <td>Creates/updates secrets in GCP Secret Manager from <code>.env</code></td>
+      </tr>
+      <tr>
+        <td><code>setup-firestore.sh</code></td>
+        <td>Creates Firestore indexes and security rules</td>
+      </tr>
+      <tr>
+        <td><code>deploy-cloud-run.sh</code></td>
+        <td>Builds and deploys backend to Cloud Run</td>
+      </tr>
+      <tr>
+        <td><code>deploy-cloud-functions.sh</code></td>
+        <td>Deploys all 4 Cloud Functions</td>
+      </tr>
+      <tr>
+        <td><code>deploy-gcp.sh</code></td>
+        <td>All-in-one: queue + functions + scheduler</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- SECTION 10: ENVIRONMENT VARIABLES -->
+<div class="section" id="section-10">
+  <h2>10. Environment Variables</h2>
+
+  <h3>10.1 Backend (Cloud Run)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Required</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>GCP_PROJECT_ID</code></td><td>Yes</td><td>GCP project ID</td></tr>
+      <tr><td><code>THIRDWEB_SECRET_KEY</code></td><td>Yes</td><td>Thirdweb API key for payment settlement</td></tr>
+      <tr><td><code>THIRDWEB_SERVER_WALLET_ADDRESS</code></td><td>Yes</td><td>Facilitator wallet address</td></tr>
+      <tr><td><code>BUILDER_SECRET_PHRASE</code></td><td>Yes</td><td>Shared secret for JWT auth to builder endpoints</td></tr>
+      <tr><td><code>GRADUATION_QUEUE_NAME</code></td><td>Yes</td><td>Cloud Tasks queue name</td></tr>
+      <tr><td><code>GRADUATION_QUEUE_LOCATION</code></td><td>Yes</td><td>Queue region (e.g., <code>us-central1</code>)</td></tr>
+      <tr><td><code>GRADUATION_FUNCTION_EVM_URL</code></td><td>Yes</td><td>EVM graduation Cloud Function URL</td></tr>
+      <tr><td><code>GRADUATION_FUNCTION_SOLANA_URL</code></td><td>Yes</td><td>Solana graduation Cloud Function URL</td></tr>
+      <tr><td><code>FEE_DISTRIBUTION_EVM_URL</code></td><td>Yes</td><td>EVM fee distribution Cloud Function URL</td></tr>
+      <tr><td><code>FEE_DISTRIBUTION_SOLANA_URL</code></td><td>Yes</td><td>Solana fee distribution Cloud Function URL</td></tr>
+      <tr><td><code>GRADUATION_INTERNAL_SECRET</code></td><td>Yes</td><td>Shared secret for graduation callback endpoints</td></tr>
+      <tr><td><code>FEE_DISTRIBUTION_SECRET</code></td><td>Yes</td><td>Shared secret for fee distribution callbacks</td></tr>
+      <tr><td><code>CLOUD_RUN_SERVICE_URL</code></td><td>Yes</td><td>Backend's own public URL (for Cloud Task callbacks)</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>No</td><td>Claude AI integration for agent chat</td></tr>
+      <tr><td><code>OPENAI_API_KEY</code></td><td>No</td><td>GPT integration for agent chat</td></tr>
+      <tr><td><code>GOOGLE_AI_API_KEY</code></td><td>No</td><td>Gemini integration for agent chat</td></tr>
+      <tr><td><code>CLOUDINARY_CLOUD_NAME</code></td><td>No</td><td>Cloudinary cloud name for logo upload</td></tr>
+      <tr><td><code>CLOUDINARY_API_KEY</code></td><td>No</td><td>Cloudinary API key for logo upload</td></tr>
+      <tr><td><code>CLOUDINARY_API_SECRET</code></td><td>No</td><td>Cloudinary API secret for logo upload</td></tr>
+      <tr><td><code>TEST_GRADUATION_THRESHOLD</code></td><td>No</td><td>Override graduation threshold for testing</td></tr>
+      <tr><td><code>PORT</code></td><td>No</td><td>Server port (default <code>3000</code>)</td></tr>
+      <tr><td><code>NODE_ENV</code></td><td>No</td><td><code>development</code> or <code>production</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.2 Cloud Functions (EVM)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>AUTOMATION_PRIVATE_KEY</code></td><td>Hex-encoded private key for automation wallet</td></tr>
+      <tr><td><code>RPC_URL</code></td><td>Base Sepolia RPC endpoint</td></tr>
+      <tr><td><code>TOKEN_DISTRIBUTOR</code></td><td>TokenDistributor contract address</td></tr>
+      <tr><td><code>BACKEND_URL</code></td><td>Backend Cloud Run URL (for callbacks)</td></tr>
+      <tr><td><code>GRADUATION_INTERNAL_SECRET</code></td><td>Auth secret (graduation function)</td></tr>
+      <tr><td><code>FEE_DISTRIBUTION_SECRET</code></td><td>Auth secret (fee distribution function)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.3 Cloud Functions (Solana)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>AUTOMATION_PRIVATE_KEY</code></td><td>Base58-encoded Solana keypair</td></tr>
+      <tr><td><code>SOLANA_RPC_URL</code></td><td>Solana RPC endpoint (devnet or mainnet)</td></tr>
+      <tr><td><code>IAO_PROGRAM_ID</code></td><td>Deployed program ID</td></tr>
+      <tr><td><code>BACKEND_URL</code></td><td>Backend Cloud Run URL (for callbacks)</td></tr>
+      <tr><td><code>GRADUATION_INTERNAL_SECRET</code></td><td>Auth secret (graduation function)</td></tr>
+      <tr><td><code>FEE_DISTRIBUTION_SECRET</code></td><td>Auth secret (fee distribution function)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.4 Frontend</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>VITE_API_BASE_URL</code></td><td>Backend API URL (e.g., <code>http://localhost:3000</code> or Cloud Run URL)</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Hardcoded in frontend source:</strong> Thirdweb Client ID, Factory addresses (per chain), Program ID, USDC addresses (per chain).</p>
+
+  <h3>10.5 GCP Credentials (3 Methods)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Method</th>
+        <th>Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>GCP_CREDENTIALS</code> (JSON string)</td>
+        <td>Cloud Run secrets &mdash; full service account JSON as env var</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><code>GOOGLE_APPLICATION_CREDENTIALS</code> (file path)</td>
+        <td>Local development &mdash; path to service account JSON file</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Default Application Credentials</td>
+        <td>Automatic on GCP services (Cloud Run, Cloud Functions)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- SECTION 11: DATABASE SCHEMA -->
+<div class="section" id="section-11">
+  <h2>11. Database Schema (Firestore)</h2>
+
+  <h3>11.1 Collections Overview</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Collection</th>
+        <th>Document ID Format</th>
+        <th>Key Fields</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>iao-tokens</code></td>
+        <td><code>{tokenAddress}</code></td>
+        <td>slug, name, symbol, builder, chainId, apis[], virtualTokensDistributed, totalFeesCollected, pendingFeesForDistribution, graduated, merkleRoot, distributionModel</td>
+      </tr>
+      <tr>
+        <td><code>token-earnings</code></td>
+        <td><code>{tokenAddr}#{userAddr}</code></td>
+        <td>totalTokensEarned, totalFeesPaid, callCount, claimed, claimTxHash</td>
+      </tr>
+      <tr>
+        <td><code>merkle-trees</code></td>
+        <td><code>{tokenAddress}</code></td>
+        <td>merkleRoot, totalLeaves, totalTokens, leaves[], treeDump, chainId, setOnChainTxHash</td>
+      </tr>
+      <tr>
+        <td><code>api-metrics</code></td>
+        <td><code>{tokenAddr}#{apiSlug}</code></td>
+        <td>callCount, totalRevenue, successCount, failureCount, recentCalls[] (last 100), averageLatency</td>
+      </tr>
+      <tr>
+        <td><code>graduation-locks</code></td>
+        <td><code>{tokenAddress}</code></td>
+        <td>acquiredAt, expiresAt (5-minute TTL)</td>
+      </tr>
+      <tr>
+        <td><code>chain-configs</code></td>
+        <td><code>{chainId}</code></td>
+        <td>chainType, name, factoryAddress, paymentTokenAddress, rpcUrl, explorerUrl, enabled</td>
+      </tr>
+      <tr>
+        <td><code>agents</code></td>
+        <td><code>{agentId}</code></td>
+        <td>name, description, creator, llmProvider, availableTools[], isPublic</td>
+      </tr>
+      <tr>
+        <td><code>chat-sessions</code></td>
+        <td><code>{sessionId}</code></td>
+        <td>agentId, userAddress, messageCount</td>
+      </tr>
+      <tr>
+        <td><code>chat-messages</code></td>
+        <td><code>{messageId}</code></td>
+        <td>sessionId, role, content, toolCalls[]</td>
+      </tr>
+      <tr>
+        <td><code>agent-payments</code></td>
+        <td><code>{paymentId}</code></td>
+        <td>Agent payment records</td>
+      </tr>
+      <tr>
+        <td><code>cache</code></td>
+        <td><code>{key}</code></td>
+        <td>value, expiresAt (auto-cleanup TTL)</td>
+      </tr>
+      <tr>
+        <td><code>rate-limits</code></td>
+        <td><code>{key}</code></td>
+        <td>count, windowStart, type</td>
+      </tr>
+      <tr>
+        <td><code>alerts</code></td>
+        <td><code>{alertId}</code></td>
+        <td>Alert configurations and history</td>
+      </tr>
+      <tr>
+        <td><code>webhooks</code></td>
+        <td><code>{webhookId}</code></td>
+        <td>Webhook endpoint configurations</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>11.2 Key Data Types</h3>
+  <div class="callout callout-info">
+    <strong>BigInt Storage:</strong> All BigInt values (token amounts, thresholds, fees) are stored as <strong>strings</strong>
+    in Firestore to prevent JavaScript precision loss beyond <code>Number.MAX_SAFE_INTEGER</code>.
+  </div>
+  <div class="callout callout-warning">
+    <strong>Address Normalization:</strong>
+    <ul>
+      <li><strong>EVM:</strong> All addresses are lowercased before storage and lookup.</li>
+      <li><strong>Solana:</strong> Addresses are stored as-is (base58, case sensitive). Never lowercase them.</li>
+    </ul>
+    The backend's <code>normalizeAddress()</code> utility handles this automatically based on chain type.
+  </div>
+</div>
+
+<!-- SECTION 12: FILE LOCATION REFERENCE -->
+<div class="section" id="section-12">
+  <h2>12. File Location Reference</h2>
+
+  <h3>12.1 Backend Files</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Purpose</th>
+        <th>Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>src/index.ts</code></td><td>Main server + all routes</td><td>~5,307 lines</td></tr>
+      <tr><td><code>src/services/firestoreTokenService.ts</code></td><td>Token CRUD + atomic distribution</td><td>~561 lines</td></tr>
+      <tr><td><code>src/services/firestoreEarningsService.ts</code></td><td>Per-user earnings tracking</td><td>~178 lines</td></tr>
+      <tr><td><code>src/services/firestoreMerkleTreeService.ts</code></td><td>Merkle trees + proof generation</td><td>~147 lines</td></tr>
+      <tr><td><code>src/services/firestoreMetricsService.ts</code></td><td>API call metrics</td><td>~412 lines</td></tr>
+      <tr><td><code>src/services/firestoreCacheService.ts</code></td><td>Cache with TTL</td><td>~275 lines</td></tr>
+      <tr><td><code>src/services/multiChainPaymentService.ts</code></td><td>Payment verify/settle (EVM + Solana)</td><td>~475 lines</td></tr>
+      <tr><td><code>src/services/graduationDispatcher.ts</code></td><td>Cloud Tasks dispatch for graduation</td><td>~80 lines</td></tr>
+      <tr><td><code>src/services/graduationLock.ts</code></td><td>Distributed lock (5-min TTL)</td><td>~72 lines</td></tr>
+      <tr><td><code>src/services/graduationNotifier.ts</code></td><td>Cloud Function invocation</td><td>~67 lines</td></tr>
+      <tr><td><code>src/middleware/rateLimiter.ts</code></td><td>4-tier rate limiting</td><td>~324 lines</td></tr>
+      <tr><td><code>src/utils/jwtAuth.ts</code></td><td>JWT generation for builder auth</td><td>~70 lines</td></tr>
+      <tr><td><code>Dockerfile</code></td><td>Multi-stage Docker build</td><td>41 lines</td></tr>
+      <tr><td><code>cloudbuild.yaml</code></td><td>CI/CD pipeline config</td><td>82 lines</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.2 Frontend Files</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>src/hooks/useX402Payment.ts</code></td><td>Payment hook (CRITICAL &mdash; EIP-3009 signing)</td></tr>
+      <tr><td><code>src/hooks/useClaimTokens.ts</code></td><td>Merkle claim hook</td></tr>
+      <tr><td><code>src/utils/api.ts</code></td><td>All backend API calls</td></tr>
+      <tr><td><code>src/contracts/tokenFactory.ts</code></td><td>EVM Factory interaction</td></tr>
+      <tr><td><code>src/contracts/solanaIaoFactory.ts</code></td><td>Solana program interaction</td></tr>
+      <tr><td><code>src/contexts/ChainContext.tsx</code></td><td>Chain selection state management</td></tr>
+      <tr><td><code>src/pages/SubmitAPIForm.tsx</code></td><td>Server registration form</td></tr>
+      <tr><td><code>src/pages/APIDetailsPage.tsx</code></td><td>Server details + API testing</td></tr>
+      <tr><td><code>src/pages/Dashboard.tsx</code></td><td>Earnings dashboard + claims</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.3 Smart Contracts (EVM)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>~/hyperpie/contracts/IAO/IAOTokenV2.sol</code></td><td>V2 Token (Merkle claims + liquidity helper)</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/IAOTokenFactory.sol</code></td><td>Factory (minimal proxy clones)</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/TokenDistributor.sol</code></td><td>Batch distribution + graduation</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/LpGuardHook.sol</code></td><td>Uniswap V4 hook (pool init whitelist)</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/IAOLiquidityHelper.sol</code></td><td>External liquidity deployment helper</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/scripts/deployIAOV2.s.sol</code></td><td>Full V2 deployment script</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.4 Solana Program</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>~/hyperpie/contracts/IAO/solana-program/programs/iao-factory/src/lib.rs</code></td><td>Program entry point</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/solana-program/programs/iao-factory/src/instructions/</code></td><td>All 10 instruction handlers</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/solana-program/programs/iao-factory/src/state/</code></td><td>Account struct definitions</td></tr>
+      <tr><td><code>~/hyperpie/contracts/IAO/solana-program/Anchor.toml</code></td><td>Anchor configuration</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.5 Cloud Functions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Directory</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>cloud-functions/graduation-evm/</code></td><td>EVM graduation (Merkle root + liquidity)</td></tr>
+      <tr><td><code>cloud-functions/graduation-solana/</code></td><td>Solana graduation (Merkle root + graduated flag)</td></tr>
+      <tr><td><code>cloud-functions/fee-distribution-evm/</code></td><td>EVM fee distribution (TokenDistributor)</td></tr>
+      <tr><td><code>cloud-functions/fee-distribution-solana/</code></td><td>Solana fee distribution (vault transfers)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.6 Deploy Scripts</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Script</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>setup-secrets.sh</code></td><td>GCP Secret Manager setup from <code>.env</code></td></tr>
+      <tr><td><code>setup-firestore.sh</code></td><td>Firestore indexes + security rules</td></tr>
+      <tr><td><code>deploy-cloud-run.sh</code></td><td>Backend deployment to Cloud Run</td></tr>
+      <tr><td><code>deploy-cloud-functions.sh</code></td><td>Cloud Functions deployment (all 4)</td></tr>
+      <tr><td><code>deploy-gcp.sh</code></td><td>All-in-one: queue + functions + scheduler</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- FOOTER -->
+<div class="footer" id="document-footer">
+  <hr>
+  <p><strong>APIX (IAO) &mdash; Initial API Offering &mdash; Complete System Documentation</strong></p>
+</div>
+
+</div><!-- .container -->
+</body>
+</html>
