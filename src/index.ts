@@ -1702,6 +1702,9 @@ app.post('/api/add-api', async (req, res) => {
       })
     }
 
+    // Invalidate cache so subsequent requests get the updated server with new API
+    await invalidateCache(CacheKeys.SERVER_BY_SLUG(serverSlug.toLowerCase()))
+
     console.log(`✅ Added API to server ${serverSlug}: ${name} (slug: ${apiSlug})`)
 
     return res.status(201).json({
@@ -4983,7 +4986,8 @@ app.post('/internal/seed-test-data/:tokenAddress', async (req, res) => {
 /**
  * WEEKLY FEE DISTRIBUTION ENDPOINT
  * Triggered by Cloud Scheduler to distribute accumulated fees to builders and team.
- * Gets all non-graduated tokens with pending fees and calls the fee-distribution Cloud Function.
+ * Gets all non-graduated tokens with pending fees and calls the appropriate
+ * fee-distribution Cloud Function (EVM or Solana) based on each token's chainId.
  */
 app.post('/internal/trigger-fee-distribution', async (req, res) => {
   const internalSecret = process.env.FEE_DISTRIBUTION_SECRET
@@ -5003,64 +5007,99 @@ app.post('/internal/trigger-fee-distribution', async (req, res) => {
       .where('graduated', '==', false)
       .get()
 
-    const tokensWithFees: Array<{ tokenAddress: string; pendingFees: string }> = []
+    const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+    const evmTokens: Array<{ tokenAddress: string; pendingFees: string }> = []
+    const solanaTokens: Array<{ tokenAddress: string; pendingFees: string }> = []
 
     for (const doc of tokensSnapshot.docs) {
       const token = doc.data()
-      // Check if token has undistributed fees
       const pendingFees = token.pendingFeesForDistribution || '0'
       if (BigInt(pendingFees) > 0n) {
-        tokensWithFees.push({
-          tokenAddress: doc.id,
-          pendingFees,
-        })
+        const entry = { tokenAddress: doc.id, pendingFees }
+        if (solanaChains.includes(token.chainId)) {
+          solanaTokens.push(entry)
+        } else {
+          evmTokens.push(entry)
+        }
       }
     }
 
-    if (tokensWithFees.length === 0) {
-      console.log('ℹ️ No tokens with pending fees for distribution')
+    const totalCount = evmTokens.length + solanaTokens.length
+    if (totalCount === 0) {
+      console.log('No tokens with pending fees for distribution')
       return res.status(200).json({
         status: 'no_pending_fees',
         message: 'No tokens have pending fees',
       })
     }
 
-    console.log(`📊 Found ${tokensWithFees.length} tokens with pending fees`)
+    console.log(`Found ${totalCount} tokens with pending fees (EVM: ${evmTokens.length}, Solana: ${solanaTokens.length})`)
 
-    // Call fee distribution Cloud Function
-    const feeDistributionUrl = process.env.FEE_DISTRIBUTION_FUNCTION_URL
-    if (!feeDistributionUrl) {
-      console.error('FEE_DISTRIBUTION_FUNCTION_URL not configured')
-      return res.status(500).json({ error: 'Fee distribution function URL not configured' })
+    const results: Array<{ chain: string; result?: any; error?: string }> = []
+
+    // Helper to call a fee distribution Cloud Function
+    const callFeeDistribution = async (url: string, tokens: typeof evmTokens, chain: string) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(internalSecret ? { 'X-Fee-Distribution-Secret': internalSecret } : {}),
+        },
+        body: JSON.stringify({ action: 'distribute-fees', tokens }),
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`${chain} Cloud Function failed: ${response.status} ${errorText}`)
+      }
+      return await response.json()
     }
 
-    const response = await fetch(feeDistributionUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(internalSecret ? { 'X-Fee-Distribution-Secret': internalSecret } : {}),
-      },
-      body: JSON.stringify({
-        action: 'distribute-fees',
-        tokens: tokensWithFees,
-      }),
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      throw new Error(`Cloud Function failed: ${response.status} ${errorText}`)
+    // Dispatch EVM tokens
+    if (evmTokens.length > 0) {
+      const evmUrl = process.env.FEE_DISTRIBUTION_FUNCTION_EVM_URL || process.env.FEE_DISTRIBUTION_FUNCTION_URL
+      if (!evmUrl) {
+        console.error('No EVM fee distribution function URL configured')
+        results.push({ chain: 'evm', error: 'No EVM fee distribution function URL configured' })
+      } else {
+        try {
+          const result = await callFeeDistribution(evmUrl, evmTokens, 'EVM')
+          console.log(`EVM fee distribution result: ${JSON.stringify(result)}`)
+          results.push({ chain: 'evm', result })
+        } catch (err: any) {
+          console.error(`EVM fee distribution failed: ${err.message}`)
+          results.push({ chain: 'evm', error: err.message })
+        }
+      }
     }
 
-    const result = await response.json() as { txHash?: string; tokensProcessed?: number }
-    console.log(`✅ Fee distribution initiated: ${JSON.stringify(result)}`)
+    // Dispatch Solana tokens
+    if (solanaTokens.length > 0) {
+      const solanaUrl = process.env.FEE_DISTRIBUTION_FUNCTION_SOLANA_URL
+      if (!solanaUrl) {
+        console.error('No Solana fee distribution function URL configured')
+        results.push({ chain: 'solana', error: 'No Solana fee distribution function URL configured' })
+      } else {
+        try {
+          const result = await callFeeDistribution(solanaUrl, solanaTokens, 'Solana')
+          console.log(`Solana fee distribution result: ${JSON.stringify(result)}`)
+          results.push({ chain: 'solana', result })
+        } catch (err: any) {
+          console.error(`Solana fee distribution failed: ${err.message}`)
+          results.push({ chain: 'solana', error: err.message })
+        }
+      }
+    }
 
-    return res.status(200).json({
+    const hasErrors = results.some(r => r.error)
+    return res.status(hasErrors ? 207 : 200).json({
       status: 'distribution_initiated',
-      tokensCount: tokensWithFees.length,
-      ...result,
+      tokensCount: totalCount,
+      evmTokens: evmTokens.length,
+      solanaTokens: solanaTokens.length,
+      results,
     })
   } catch (error: any) {
-    console.error('❌ Fee distribution trigger failed:', error)
+    console.error('Fee distribution trigger failed:', error)
     return res.status(500).json({ error: 'Failed to trigger fee distribution', message: error.message })
   }
 })

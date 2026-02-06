@@ -1,13 +1,13 @@
 {
-  "name": "graduation-solana-function",
+  "name": "fee-distribution-solana-function",
   "version": "1.0.0",
-  "description": "Cloud Function to execute Solana on-chain graduation via graduate_with_merkle + distribute_fees",
+  "description": "Cloud Function to distribute accumulated Solana fees to builders and team via distribute_fees instruction",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "gcp-build": "tsc",
     "build": "tsc",
-    "start": "npx functions-framework --target=graduateSolana --source=dist/"
+    "start": "npx functions-framework --target=distributeFeesSolana --source=dist/"
   },
   "dependencies": {
     "@google-cloud/functions-framework": "^3.4.0",
