@@ -4345,12 +4345,27 @@ app.get('/api/chat/stream/:sessionId', async (req, res) => {
     console.log(`📨 Loaded ${messages.length} messages from session`)
 
     // Convert to LLM format (filter out system messages, keep only user/assistant)
+    // IMPORTANT: Sanitize "Payment successful!" messages to prevent LLM from
+    // learning to fabricate API results without actually calling tools.
+    // These messages come from the frontend after a payment+API call cycle.
     let llmMessages = messages
       .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-      .map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content
-      }))
+      .map(msg => {
+        // Rewrite payment result messages so LLM doesn't mimic the pattern
+        if (msg.role === 'user' && msg.content?.includes('Payment successful!')) {
+          return {
+            role: 'user' as const,
+            content: msg.content.replace(
+              /Payment successful![^{]*/i,
+              '[SYSTEM: Tool was executed after user payment. Result data:] '
+            )
+          }
+        }
+        return {
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content
+        }
+      })
 
     // Determine effective model (use override if provided)
     const effectiveModel = modelOverride || agent.llmProvider
@@ -4489,6 +4504,13 @@ You: "This API requires a request body. What data would you like to send? Please
 - Don't provide information that isn't directly from your API tools
 - Don't be rude when redirecting - be helpful and friendly
 
+⛔ CRITICAL - NEVER FABRICATE API RESULTS:
+- NEVER generate text like "Payment successful!" or pretend you already called an API
+- NEVER make up or invent API response data - you MUST call the tool to get real data
+- Even if conversation history shows previous API results, you MUST call the tool again for each new query
+- If you need data from an API, ALWAYS use the tool call - the system will handle payment automatically
+- If you respond without calling a tool, your answer will contain made-up data which is HARMFUL to users
+
 ✨ EXAMPLE INTERACTIONS:
 
 GOOD - Greeting:
@@ -4620,6 +4642,26 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
       }
 
       console.log(`✅ LLM streaming completed. Assistant message length: ${assistantMessage.length}`)
+
+      // Anti-hallucination check: detect if LLM fabricated API results without making a tool call
+      if (toolCalls.length === 0 && !isPaymentResult) {
+        const fabricationPatterns = [
+          /payment successful/i,
+          /i'?ve queried the/i,
+          /here (?:are|is) the (?:result|data|response|classification)/i,
+          /API (?:returned|responded|result)/i,
+        ]
+        const hasFabricatedResult = fabricationPatterns.some(p => p.test(assistantMessage))
+        if (hasFabricatedResult) {
+          console.warn(`⚠️  HALLUCINATION DETECTED: Agent ${agent.id} (${agent.name}) generated API-result-like text without making a tool call`)
+          console.warn(`⚠️  Discarding fabricated response and prompting tool use`)
+          // Discard the fabricated message and send a corrective response
+          assistantMessage = `I need to use my API tool to get accurate data for you. Let me look that up now.`
+          hasError = false
+          // Note: The frontend should detect this pattern and re-trigger the stream
+          // For now, we replace the message to prevent bad data from being saved
+        }
+      }
     } catch (streamError: any) {
       console.error("❌ LLM streaming error:", streamError)
       hasError = true
