@@ -137,7 +137,7 @@ gcloud scheduler jobs create http $JOB_NAME \
   --uri="$ENDPOINT" \
   --http-method=POST \
   --headers="Content-Type=application/json,X-Fee-Distribution-Secret=$FEE_DISTRIBUTION_SECRET" \
-  --body='{}' \
+  --message-body='{}' \
   --time-zone="UTC" \
   --attempt-deadline="300s" \
   --description="Weekly fee distribution for all IAO tokens (EVM + Solana)"
