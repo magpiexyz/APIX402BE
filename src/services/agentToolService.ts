@@ -63,7 +63,7 @@ export class AgentToolService {
    */
   async fetchAvailableServers(): Promise<IaoServer[]> {
     try {
-      const response = await fetch(`${this.backendUrl}/api/servers`)
+      const response = await fetch(`${this.backendUrl}/api/servers?limit=100`)
 
       if (!response.ok) {
         throw new Error(`Failed to fetch servers: ${response.status}`)
