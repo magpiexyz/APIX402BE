@@ -2833,11 +2833,15 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     try {
       // Build builder endpoint URL with query parameters
       const builderUrl = new URL(api.apiUrl)
-       
-      // Copy all query parameters from proxy request to builder endpoint
-      Object.keys(req.query).forEach((key: string) => {
-        builderUrl.searchParams.set(key, req.query[key] as string)
-      })
+
+      // Preserve the raw query string from the original request to avoid
+      // URLSearchParams reformatting (e.g. adding '=' to valueless params)
+      const rawQuery = req.originalUrl.includes('?')
+        ? req.originalUrl.split('?').slice(1).join('?')
+        : ''
+      if (rawQuery) {
+        builderUrl.search = rawQuery
+      }
 
       console.log(`Forwarding request to builder endpoint (BEFORE payment): ${builderUrl.toString()}`)
 
