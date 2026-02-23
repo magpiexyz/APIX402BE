@@ -757,56 +757,79 @@ async function executePaymentTransfer(
       timestamp: new Date().toISOString()
     })
     
-    // Use thirdweb's settlePayment to execute the transfer
-    const paymentResult = await settlePayment({
-      resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
-      method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
-      paymentData,
-      payTo: tokenAddress,  // Payment goes to token address (ORIGINAL)
-      network: baseSepolia,
-      price: priceString,
-      facilitator: thirdwebFacilitator,
-      routeConfig: {
-        description: `IAO Proxy - ${serverSlug}/${apiSlug} - ${apiName}`,
-        mimeType: "application/json",
-        maxTimeoutSeconds: 300,
-      },
-    })
-    
-    console.log('📊 settlePayment result:', {
-      status: paymentResult.status,
-      hasPaymentReceipt: paymentResult.status === 200 && !!paymentResult.paymentReceipt,
-      paymentReceiptKeys: paymentResult.status === 200 ? Object.keys(paymentResult.paymentReceipt || {}) : [],
-      paymentReceipt: paymentResult.status === 200 ? JSON.stringify(paymentResult.paymentReceipt, null, 2) : null,
-      timestamp: new Date().toISOString()
-    })
-    
-    if (paymentResult.status === 200) {
-      console.log('✅ Payment settled successfully!')
-      // Try multiple possible property names for on-chain transaction hash
-      const receipt = paymentResult.paymentReceipt as Record<string, any> || {}
-      const txHash = receipt.transactionHash  // Preferred: actual on-chain hash
-        || receipt.txHash
-        || receipt.hash
-        || (typeof receipt.transaction === 'string' && receipt.transaction.startsWith('0x') ? receipt.transaction : undefined)
-      return {
-        success: true,
-        txHash,
-        paymentReceipt: paymentResult.paymentReceipt
+    // Use thirdweb's settlePayment to execute the transfer, with retry on transient errors
+    const MAX_ATTEMPTS = 3
+    const RETRY_DELAYS_MS = [2000, 4000] // 2s then 4s between retries
+    let lastError: string = 'Payment settlement failed after all retries'
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        const delay = RETRY_DELAYS_MS[attempt - 2]
+        console.log(`🔄 Retrying settlePayment (attempt ${attempt}/${MAX_ATTEMPTS}) after ${delay}ms...`)
+        await new Promise(resolve => setTimeout(resolve, delay))
       }
-    } else {
-      const errorBody = (paymentResult as any).responseBody
-      console.error('❌ Payment settlement failed:', {
-        status: paymentResult.status,
-        errorBody: JSON.stringify(errorBody, null, 2),
-        timestamp: new Date().toISOString()
-      })
-      return { 
-        success: false, 
-        error: errorBody?.errorMessage || 'Payment settlement returned non-200 status',
-        txHash: undefined
+
+      try {
+        const paymentResult = await settlePayment({
+          resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+          method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+          paymentData,
+          payTo: tokenAddress,  // Payment goes to token address (ORIGINAL)
+          network: baseSepolia,
+          price: priceString,
+          facilitator: thirdwebFacilitator,
+          routeConfig: {
+            description: `IAO Proxy - ${serverSlug}/${apiSlug} - ${apiName}`,
+            mimeType: "application/json",
+            maxTimeoutSeconds: 300,
+          },
+        })
+
+        console.log(`📊 settlePayment result (attempt ${attempt}):`, {
+          status: paymentResult.status,
+          hasPaymentReceipt: paymentResult.status === 200 && !!paymentResult.paymentReceipt,
+          paymentReceiptKeys: paymentResult.status === 200 ? Object.keys(paymentResult.paymentReceipt || {}) : [],
+          paymentReceipt: paymentResult.status === 200 ? JSON.stringify(paymentResult.paymentReceipt, null, 2) : null,
+          timestamp: new Date().toISOString()
+        })
+
+        if (paymentResult.status === 200) {
+          console.log(`✅ Payment settled successfully (attempt ${attempt})!`)
+          const receipt = paymentResult.paymentReceipt as Record<string, any> || {}
+          const txHash = receipt.transactionHash
+            || receipt.txHash
+            || receipt.hash
+            || (typeof receipt.transaction === 'string' && receipt.transaction.startsWith('0x') ? receipt.transaction : undefined)
+          return {
+            success: true,
+            txHash,
+            paymentReceipt: paymentResult.paymentReceipt
+          }
+        }
+
+        const errorBody = (paymentResult as any).responseBody
+        lastError = errorBody?.errorMessage || `Payment settlement returned status ${paymentResult.status}`
+
+        // Don't retry on 402/403/400 — these are auth/signature failures, not transient
+        const statusCode = paymentResult.status as number
+        const isTransient = statusCode >= 500 || statusCode === 0
+        if (!isTransient) {
+          console.error(`❌ Payment settlement failed with non-retryable status ${statusCode}:`, JSON.stringify(errorBody, null, 2))
+          return { success: false, error: lastError }
+        }
+
+        console.warn(`⚠️  settlePayment returned ${paymentResult.status} (transient), will retry`)
+
+      } catch (attemptError: any) {
+        lastError = attemptError.message || 'settlePayment threw an exception'
+        console.warn(`⚠️  settlePayment attempt ${attempt} threw: ${lastError}`)
+        // Network errors / timeouts are always retryable
       }
     }
+
+    console.error(`❌ Payment settlement failed after ${MAX_ATTEMPTS} attempts: ${lastError}`)
+    return { success: false, error: lastError }
+
   } catch (error: any) {
     console.error("Error in executePaymentTransfer:", error)
     return { success: false, error: error.message || 'Failed to execute payment transfer' }
@@ -3203,12 +3226,15 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           )
 
           if (!paymentResult.success) {
-            console.error("❌ Payment execution failed AFTER successful builder response")
+            console.error("❌ Payment settlement failed after all retries — returning builder data anyway (not charged)")
             console.error("Payment error:", paymentResult.error)
-            return res.status(500).json({
-              error: "Payment execution failed",
-              message: "Builder returned data successfully, but payment could not be executed.",
-              x402Version: 2,
+            // Graceful degradation: builder succeeded, so return data to user.
+            // Payment was not settled (user is not charged), but we don't punish
+            // them with a blank screen due to a transient Thirdweb timeout.
+            res.set('X-Payment-Settlement', 'failed')
+            res.set('X-Payment-Error', (paymentResult.error || 'settlement failed').slice(0, 200))
+            return res.status(200).json({
+              warning: "Payment settlement failed — you were NOT charged. Please retry if needed.",
               paymentError: paymentResult.error,
               data: parsedData,
               serverSlug,
