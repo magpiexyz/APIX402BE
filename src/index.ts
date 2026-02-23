@@ -3208,13 +3208,11 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           } catch (solanaSettleErr: any) {
             console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
 
-            // Return error to user - they were not charged
-            return res.status(500).json({
+            // Never return API data unless payment is confirmed settled.
+            return res.status(402).json({
               error: "Payment settlement failed",
-              message: "Builder returned data successfully, but Solana payment could not be executed.",
-              x402Version: 2,
+              message: "Your Solana payment could not be executed. You have NOT been charged.",
               paymentError: solanaSettleErr.message,
-              data: parsedData,
               serverSlug,
               apiSlug,
               charged: false
@@ -3244,32 +3242,37 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           )
 
           if (!paymentResult.success) {
-            // hadTransientFailure = at least one attempt returned 5xx / timed out.
-            // In that case the on-chain tx may have already been submitted even though
-            // we never received a receipt (Thirdweb 524 timeout scenario).
-            // We still return the builder data so the user isn't left with a blank screen.
             const settlementAmbiguous = !!paymentResult.hadTransientFailure
-            if (settlementAmbiguous) {
-              console.error("❌ Payment settlement timed out — on-chain status unknown, returning builder data")
-            } else {
-              console.error("❌ Payment settlement failed — returning builder data (user not charged)")
-            }
             console.error("Payment error:", paymentResult.error)
 
-            const warningMsg = settlementAmbiguous
-              ? "Payment settlement timed out. Your API result is returned below. Please check your wallet — if a transaction was confirmed on-chain you were charged; if not, no funds were taken."
-              : "Payment settlement failed — you were NOT charged. Please retry if needed."
-
-            res.set('X-Payment-Settlement', settlementAmbiguous ? 'timeout' : 'failed')
-            res.set('X-Payment-Error', (paymentResult.error || 'settlement failed').slice(0, 200))
-            return res.status(200).json({
-              warning: warningMsg,
-              paymentError: paymentResult.error,
-              data: parsedData,
-              serverSlug,
-              apiSlug,
-              charged: settlementAmbiguous ? 'unknown' : false
-            })
+            // Never return API data unless payment is confirmed settled on-chain.
+            // If settlement timed out, the on-chain status is unknown — we still
+            // withhold the data, but tell the user to check their wallet.
+            if (settlementAmbiguous) {
+              console.error("❌ Payment settlement timed out after all retries — withholding API data")
+              res.set('X-Payment-Settlement', 'timeout')
+              res.set('X-Payment-Error', (paymentResult.error || 'settlement timeout').slice(0, 200))
+              return res.status(504).json({
+                error: "Payment settlement timed out",
+                message: "The payment processor timed out. Please check your wallet — if a transaction was confirmed on-chain you were charged and may retry to get your result; if not, no funds were taken.",
+                paymentError: paymentResult.error,
+                serverSlug,
+                apiSlug,
+                charged: 'unknown'
+              })
+            } else {
+              console.error("❌ Payment settlement failed (non-transient) — withholding API data")
+              res.set('X-Payment-Settlement', 'failed')
+              res.set('X-Payment-Error', (paymentResult.error || 'settlement failed').slice(0, 200))
+              return res.status(402).json({
+                error: "Payment settlement failed",
+                message: "Your payment could not be processed. You have NOT been charged. Please retry.",
+                paymentError: paymentResult.error,
+                serverSlug,
+                apiSlug,
+                charged: false
+              })
+            }
           }
 
           console.log("✅ Payment executed successfully:", paymentResult.txHash)
