@@ -813,14 +813,21 @@ async function executePaymentTransfer(
         const errorBody = (paymentResult as any).responseBody
         lastError = errorBody?.errorMessage || `Payment settlement returned status ${paymentResult.status}`
 
-        // Don't retry on 402/403/400 — these are auth/signature failures, not transient.
-        // EXCEPTION: if a prior attempt timed out and the on-chain tx may have already
-        // settled, a subsequent 402 "authorization already used" error is actually a sign
-        // that the payment DID go through — treat it as a success-without-receipt.
+        // Don't retry on 402/403/400 — these are usually auth/signature failures.
+        // EXCEPTION 1: Thirdweb sometimes wraps an internal 524 timeout as a 402.
+        //   e.g. errorMessage: "Failed to settle payment: 524 <none> ..."
+        //   In this case the error IS transient and should be retried.
+        // EXCEPTION 2: if a prior attempt timed out and the on-chain tx may have already
+        //   settled, a subsequent 402 "authorization already used" means payment went through.
         const statusCode = paymentResult.status as number
-        const isTransient = statusCode >= 500 || statusCode === 0
+        const errorMsg = (lastError || '').toLowerCase()
+        // Check if 402 actually contains an upstream timeout (Thirdweb wrapping 524)
+        const isThirdwebWrappedTimeout = statusCode === 402 && (
+          errorMsg.includes('524') ||
+          errorMsg.includes('timeout')
+        )
+        const isTransient = statusCode >= 500 || statusCode === 0 || isThirdwebWrappedTimeout
         if (!isTransient) {
-          const errorMsg = (lastError || '').toLowerCase()
           const alreadySettled = hadTransientFailure && (
             errorMsg.includes('already used') ||
             errorMsg.includes('already settled') ||
