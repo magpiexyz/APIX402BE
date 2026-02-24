@@ -5,3 +5,5 @@ dist
 api/dist
 build
 coverage
+gcp-credentials-local.json
+*.service-account.json
