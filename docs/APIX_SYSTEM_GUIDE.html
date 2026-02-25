@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APIX (IAO) System Guide</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #7ee787;
+    --accent3: #d2a8ff;
+    --accent4: #ffa657;
+    --danger: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 0;
+  }
+
+  /* Top nav */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(15,17,23,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 32px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  .topbar .logo {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+  .topbar nav a {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 14px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .topbar nav a:hover {
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  /* Layout */
+  .wrapper {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 48px 32px 120px;
+  }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 60px 0 48px;
+  }
+  .hero h1 {
+    font-size: 42px;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    background: linear-gradient(135deg, var(--accent), var(--accent3));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 12px;
+  }
+  .hero p {
+    color: var(--text-muted);
+    font-size: 18px;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  /* Section */
+  section {
+    margin-top: 64px;
+  }
+  h2 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2 .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  h2:nth-of-type(1) .num { background: rgba(88,166,255,0.15); color: var(--accent); }
+  h2:nth-of-type(2) .num { background: rgba(126,231,135,0.15); color: var(--accent2); }
+  h2:nth-of-type(3) .num { background: rgba(210,168,255,0.15); color: var(--accent3); }
+
+  h3 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-top: 36px;
+    margin-bottom: 12px;
+    color: var(--text);
+  }
+  h4 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    color: var(--accent4);
+  }
+
+  p { margin-bottom: 14px; color: var(--text); }
+  strong { color: var(--text); }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 16px 0;
+  }
+  .card h4 { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  @media (max-width: 700px) {
+    .card-grid { grid-template-columns: 1fr; }
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:hover td { background: rgba(88,166,255,0.03); }
+
+  /* Code */
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent4);
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+  }
+  .comment { color: var(--text-muted); }
+  .cmd { color: var(--accent2); }
+  .flag { color: var(--accent3); }
+  .str { color: var(--accent4); }
+
+  /* Diagrams */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin: 20px 0;
+    overflow-x: auto;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--accent);
+    white-space: pre;
+  }
+  .diagram .label { color: var(--text); font-weight: 600; }
+  .diagram .muted { color: var(--text-muted); }
+
+  /* Lists */
+  ul, ol {
+    margin: 10px 0 14px 24px;
+  }
+  li {
+    margin-bottom: 6px;
+  }
+
+  /* Steps */
+  .steps {
+    list-style: none;
+    margin-left: 0;
+    counter-reset: step;
+  }
+  .steps li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 40px;
+    margin-bottom: 16px;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(88,166,255,0.15);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Badges / Tags */
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-green { background: rgba(126,231,135,0.15); color: var(--accent2); }
+  .tag-purple { background: rgba(210,168,255,0.15); color: var(--accent3); }
+  .tag-orange { background: rgba(255,166,87,0.15); color: var(--accent4); }
+
+  /* Callout */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(88,166,255,0.06);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  .callout.warn {
+    border-left-color: var(--accent4);
+    background: rgba(255,166,87,0.06);
+  }
+  .callout.success {
+    border-left-color: var(--accent2);
+    background: rgba(126,231,135,0.06);
+  }
+
+  /* Flow arrows */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 24px 0;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .flow-step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    text-align: center;
+    min-width: 140px;
+  }
+  .flow-step .title {
+    font-weight: 700;
+    font-size: 15px;
+    margin-bottom: 4px;
+  }
+  .flow-step .sub {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .flow-arrow {
+    font-size: 20px;
+    color: var(--text-muted);
+    padding: 0 8px;
+  }
+
+  /* Env var blocks */
+  .env-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 12px 0;
+    font-family: 'SF Mono', monospace;
+    font-size: 13px;
+    line-height: 1.8;
+  }
+  .env-block .env-name { color: var(--accent2); }
+  .env-block .env-val { color: var(--text-muted); }
+
+  /* Separator */
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 40px 0 20px;
+    border-top: 1px solid var(--border);
+    margin-top: 80px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="logo">APIX Docs</span>
+  <nav>
+    <a href="#scheduler">Scheduler</a>
+    <a href="#contracts">Contracts</a>
+    <a href="#tokens">Token Mechanism</a>
+    <a href="#quickref">Quick Reference</a>
+  </nav>
+</div>
+
+<div class="wrapper">
+
+<!-- Hero -->
+<div class="hero">
+  <h1>APIX System Guide</h1>
+  <p>Cloud Function scheduling, smart contract architecture & deployment, and the token generation mechanism &mdash; all in one place.</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 1: Cloud Functions & Scheduler -->
+<!-- ============================================================ -->
+<section id="scheduler">
+<h2><span class="num">1</span> Cloud Function &amp; Scheduler Setup</h2>
+
+<p>APIX uses <strong>Google Cloud Scheduler</strong> and <strong>Cloud Tasks</strong> to automate two operations:</p>
+
+<table>
+  <tr><th>Operation</th><th>Trigger</th><th>Frequency</th><th>Purpose</th></tr>
+  <tr>
+    <td>Fee Distribution</td>
+    <td><span class="tag tag-blue">Cloud Scheduler</span></td>
+    <td>Weekly (Sunday midnight UTC)</td>
+    <td>Distribute accumulated USDC fees to builders &amp; team</td>
+  </tr>
+  <tr>
+    <td>Token Graduation</td>
+    <td><span class="tag tag-purple">Cloud Tasks</span></td>
+    <td>On-demand (threshold crossed)</td>
+    <td>Deploy Merkle root + liquidity on-chain</td>
+  </tr>
+</table>
+
+<h3>How Fee Distribution Works</h3>
+
+<div class="diagram"><span class="label">Cloud Scheduler</span> <span class="muted">(weekly cron: 0 0 * * 0)</span>
+       |
+       v
+<span class="label">POST /internal/trigger-fee-distribution</span> <span class="muted">(Backend on Cloud Run)</span>
+       |
+       +---------------------+
+       |                     |
+       v                     v
+<span class="label">fee-distribution-evm</span>    <span class="label">fee-distribution-solana</span>
+<span class="muted">(Cloud Function)</span>         <span class="muted">(Cloud Function)</span>
+       |                     |
+       v                     v
+  On-chain TX            On-chain TX
+       |                     |
+       +---------------------+
+       |
+       v
+<span class="label">POST /internal/fee-distribution-confirm</span>
+<span class="muted">(Backend clears pending fees)</span></div>
+
+<h3>How Graduation Works</h3>
+
+<div class="diagram"><span class="label">API call crosses graduation threshold</span>
+       |
+       v
+<span class="label">Cloud Tasks Queue</span> <span class="muted">(dedup by named task: graduate-{addr})</span>
+       |
+       v
+<span class="label">POST /internal/graduate/:tokenAddress</span>
+<span class="muted">(Backend builds Merkle tree from earnings)</span>
+       |
+       +---------------------+
+       |                     |
+       v                     v
+<span class="label">graduation-evm</span>          <span class="label">graduation-solana</span>
+<span class="muted">(Cloud Function)</span>         <span class="muted">(Cloud Function)</span>
+       |                     |
+       v                     v
+<span class="label">POST /internal/graduation-confirm/:tokenAddress</span>
+<span class="muted">(Backend marks graduated = true)</span></div>
+
+<h3>The 4 Cloud Functions</h3>
+
+<p>All source code lives in <code>cloud-functions/</code>:</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h4>Fee Distribution EVM</h4>
+    <p><code>cloud-functions/fee-distribution-evm/</code></p>
+    <p>Calls <code>TokenDistributor.distributeFees()</code> on-chain to split accumulated USDC among builders and team.</p>
+    <p><span class="tag tag-blue">HTTP</span> <span class="tag tag-green">Weekly</span></p>
+  </div>
+  <div class="card">
+    <h4>Fee Distribution Solana</h4>
+    <p><code>cloud-functions/fee-distribution-solana/</code></p>
+    <p>Calls <code>distribute_fees</code> instruction per token on Solana. Splits fees among builder, team, and buyback.</p>
+    <p><span class="tag tag-blue">HTTP</span> <span class="tag tag-green">Weekly</span></p>
+  </div>
+  <div class="card">
+    <h4>Graduation EVM</h4>
+    <p><code>cloud-functions/graduation-evm/</code></p>
+    <p>Calls <code>graduateTokenWithMerkle()</code> with Merkle root, then distributes fees. Gas limit: 25M (Uniswap V4 pool init needs ~20M).</p>
+    <p><span class="tag tag-purple">Cloud Tasks</span> <span class="tag tag-orange">On-demand</span></p>
+  </div>
+  <div class="card">
+    <h4>Graduation Solana</h4>
+    <p><code>cloud-functions/graduation-solana/</code></p>
+    <p>Two steps: <code>graduate_with_merkle()</code> then <code>distribute_fees()</code>. Uses Borsh encoding for Merkle root.</p>
+    <p><span class="tag tag-purple">Cloud Tasks</span> <span class="tag tag-orange">On-demand</span></p>
+  </div>
+</div>
+
+<h3>Setup Steps</h3>
+
+<ol class="steps">
+  <li>
+    <strong>Deploy Cloud Functions</strong>
+    <pre><code><span class="comment"># Quick: use the deployment script</span>
+<span class="cmd">./deploy-cloud-functions.sh</span>
+
+<span class="comment"># Or manually per function:</span>
+<span class="cmd">gcloud functions deploy</span> graduateEvm \
+  <span class="flag">--gen2 --runtime</span>=nodejs20 <span class="flag">--region</span>=us-central1 \
+  <span class="flag">--trigger-http --allow-unauthenticated</span> \
+  <span class="flag">--set-secrets</span>=<span class="str">"AUTOMATION_PRIVATE_KEY=automation-private-key:latest"</span> \
+  <span class="flag">--set-env-vars</span>=<span class="str">"RPC_URL=https://sepolia.base.org,..."</span></code></pre>
+  </li>
+  <li>
+    <strong>Create Cloud Tasks Queue</strong>
+    <pre><code><span class="cmd">gcloud tasks queues create</span> graduation-queue <span class="flag">--location</span>=us-central1</code></pre>
+  </li>
+  <li>
+    <strong>Set Up Cloud Scheduler</strong>
+    <pre><code><span class="cmd">gcloud scheduler jobs create http</span> fee-distribution-weekly \
+  <span class="flag">--schedule</span>=<span class="str">"0 0 * * 0"</span> \
+  <span class="flag">--uri</span>=<span class="str">"https://your-backend.run.app/internal/trigger-fee-distribution"</span> \
+  <span class="flag">--http-method</span>=POST \
+  <span class="flag">--headers</span>=<span class="str">"Content-Type=application/json,X-Fee-Distribution-Secret=YOUR_SECRET"</span> \
+  <span class="flag">--time-zone</span>=<span class="str">"UTC"</span></code></pre>
+  </li>
+  <li>
+    <strong>Configure Backend Env Vars</strong> (on Cloud Run)
+    <div class="env-block">
+<span class="env-name">GRADUATION_QUEUE_NAME</span>=<span class="env-val">graduation-queue</span>
+<span class="env-name">GRADUATION_QUEUE_LOCATION</span>=<span class="env-val">us-central1</span>
+<span class="env-name">GRADUATION_FUNCTION_EVM_URL</span>=<span class="env-val">https://graduateevm-xxxxx.run.app</span>
+<span class="env-name">GRADUATION_FUNCTION_SOLANA_URL</span>=<span class="env-val">https://graduatesolana-xxxxx.run.app</span>
+<span class="env-name">FEE_DISTRIBUTION_EVM_URL</span>=<span class="env-val">https://distributefeesevm-xxxxx.run.app</span>
+<span class="env-name">FEE_DISTRIBUTION_SOLANA_URL</span>=<span class="env-val">https://distributefeessolana-xxxxx.run.app</span>
+<span class="env-name">GRADUATION_INTERNAL_SECRET</span>=<span class="env-val">your-graduation-secret</span>
+<span class="env-name">FEE_DISTRIBUTION_SECRET</span>=<span class="env-val">your-fee-distribution-secret</span>
+    </div>
+  </li>
+  <li>
+    <strong>Or: Run the all-in-one script</strong>
+    <pre><code><span class="cmd">./deploy-gcp.sh</span>  <span class="comment"># Creates queue, deploys functions, configures scheduler</span></code></pre>
+  </li>
+</ol>
+
+<h3>Backend Internal Endpoints</h3>
+
+<table>
+  <tr><th>Endpoint</th><th>Triggered By</th><th>Auth</th><th>What It Does</th></tr>
+  <tr>
+    <td><code>POST /internal/trigger-fee-distribution</code></td>
+    <td>Cloud Scheduler</td>
+    <td><code>X-Fee-Distribution-Secret</code></td>
+    <td>Fetches tokens, groups by chain, calls fee distribution functions</td>
+  </tr>
+  <tr>
+    <td><code>POST /internal/graduate/:tokenAddress</code></td>
+    <td>Cloud Tasks</td>
+    <td><code>X-Graduation-Secret</code></td>
+    <td>Builds Merkle tree, invokes graduation Cloud Function</td>
+  </tr>
+  <tr>
+    <td><code>POST /internal/graduation-confirm/:tokenAddress</code></td>
+    <td>Cloud Function callback</td>
+    <td><code>X-Graduation-Secret</code></td>
+    <td>Marks token <code>graduated = true</code></td>
+  </tr>
+  <tr>
+    <td><code>POST /internal/fee-distribution-confirm</code></td>
+    <td>Cloud Function callback</td>
+    <td><code>X-Fee-Distribution-Secret</code></td>
+    <td>Clears <code>pendingFeesForDistribution</code></td>
+  </tr>
+  <tr>
+    <td><code>GET /internal/graduation-earnings/:tokenAddress</code></td>
+    <td>Solana Cloud Function</td>
+    <td><code>X-Graduation-Secret</code></td>
+    <td>Returns earnings breakdown for batch mint</td>
+  </tr>
+</table>
+
+<h3>Race Condition Protection (3 Layers)</h3>
+
+<div class="callout success">
+  <strong>Layer 1 &mdash; Cloud Tasks Deduplication:</strong> Named task <code>graduate-{tokenAddress}</code> &mdash; duplicate dispatch returns gRPC ALREADY_EXISTS (silently ignored).<br><br>
+  <strong>Layer 2 &mdash; Firestore Atomic Transaction:</strong> <code>incrementVirtualDistributedWithEarnings()</code> &mdash; single transaction caps distribution at threshold.<br><br>
+  <strong>Layer 3 &mdash; Graduation Lock:</strong> Firestore document with 5-minute TTL &mdash; prevents concurrent graduation execution.
+</div>
+
+</section>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- SECTION 2: Smart Contracts -->
+<!-- ============================================================ -->
+<section id="contracts">
+<h2><span class="num">2</span> Smart Contract Source Code &amp; Deployment</h2>
+
+<h3>EVM Contracts (Solidity)</h3>
+<p>Location: <code>~/hyperpie/contracts/IAO/</code></p>
+
+<table>
+  <tr><th>Contract</th><th>What It Does</th></tr>
+  <tr><td><code>IAOToken.sol</code></td><td>ERC20 with bonding curve, EIP-3009 gasless payments, Uniswap V4 liquidity deployment</td></tr>
+  <tr><td><code>IAOTokenV2.sol</code></td><td>Optimized version (under 24KB limit) &mdash; delegates liquidity to external helper</td></tr>
+  <tr><td><code>IAOTokenFactory.sol</code></td><td>Creates tokens via minimal proxy clones, manages payment token configs</td></tr>
+  <tr><td><code>TokenDistributor.sol</code></td><td>Batch distributes tokens. Idempotent via txHash tracking. ~$0.01-0.02/user</td></tr>
+  <tr><td><code>LpGuardHook.sol</code></td><td>Uniswap V4 hook &mdash; whitelists pool initializer, prevents unauthorized pools</td></tr>
+  <tr><td><code>LpGuardHookDeployer.sol</code></td><td>Mines valid hook addresses with BEFORE_INITIALIZE_FLAG, caches results</td></tr>
+  <tr><td><code>IAOLiquidityHelper.sol</code></td><td>Uniswap V4 pool creation + liquidity (extracted from Token for size)</td></tr>
+</table>
+
+<p><strong>Tests:</strong> <code>contracts/IAO/tests/</code> &mdash; IAOToken.t.sol, IAOTokenFactory.t.sol, IAOTokenMerkleClaim.t.sol</p>
+
+<h3>Solana Program (Rust / Anchor)</h3>
+<p>Location: <code>~/hyperpie/contracts/IAO/solana-program/</code></p>
+<p>Program ID: <code>FpCX6E1LxRph23NJgF9R8haRJscGPbbdhP2vd5Sn6jwA</code></p>
+
+<table>
+  <tr><th>#</th><th>Instruction</th><th>Purpose</th></tr>
+  <tr><td>1</td><td><code>initialize_factory</code></td><td>One-time setup: admin, payment token, price</td></tr>
+  <tr><td>2</td><td><code>create_token</code></td><td>Create SPL token with bonding curve state</td></tr>
+  <tr><td>3</td><td><code>initialize_token_vault</code></td><td>Init USDC vault (call right after create_token)</td></tr>
+  <tr><td>4</td><td><code>deploy_liquidity</code></td><td>Deploy to Raydium CLMM on graduation</td></tr>
+  <tr><td>5</td><td><code>update_automation_wallet</code></td><td>Change automation wallet (admin only)</td></tr>
+  <tr><td>6</td><td><code>update_payment_token_price</code></td><td>Adjust pricing (admin only)</td></tr>
+  <tr><td>7</td><td><code>initialize_fee_config</code></td><td>Set up fee split config</td></tr>
+  <tr><td>8</td><td><code>distribute_fees</code></td><td>Distribute accumulated fees to stakeholders</td></tr>
+  <tr><td>9</td><td><code>graduate_with_merkle</code></td><td>Set Merkle root for post-graduation claims</td></tr>
+  <tr><td>10</td><td><code>merkle_claim</code></td><td>Users claim tokens via Merkle proof</td></tr>
+</table>
+
+<p><strong>Key State Accounts:</strong></p>
+<ul>
+  <li><strong>FactoryState</strong> (PDA: <code>["factory"]</code>) &mdash; admin, automation wallet, payment token, price</li>
+  <li><strong>IaoTokenState</strong> (PDA: <code>["iao-token", slug]</code>) &mdash; slug, mint, threshold (625M), distributed, is_graduated</li>
+</ul>
+
+<h3>Architecture</h3>
+
+<div class="diagram"><span class="label">EVM Architecture</span>
+
+IAOTokenFactory
+    |
+    |-- creates --> IAOTokenV2 <span class="muted">(minimal proxy clone)</span>
+                        |
+              +---------+---------+
+              |                   |
+        EIP-3009 pay         Graduate
+        <span class="muted">(settle USDC)</span>       <span class="muted">(threshold met)</span>
+              |                   |
+              v                   v
+       Fee accumulation    IAOLiquidityHelper --> LpGuardHook
+              |            <span class="muted">(Uniswap V4 pool)</span>     <span class="muted">(protect LP)</span>
+              v
+       TokenDistributor
+       <span class="muted">(batch distribute, fee distribute, graduate w/ merkle)</span>
+
+
+<span class="label">Solana Architecture</span>
+
+iao-factory program
+    |
+    +-- initialize_factory
+    +-- create_token + initialize_token_vault
+    |       |
+    |       +--> PDA state tracking
+    |       +--> merkle_claim <span class="muted">(user claims)</span>
+    |
+    +-- graduate_with_merkle
+    |       +--> deploy_liquidity <span class="muted">(Raydium CLMM)</span>
+    |
+    +-- distribute_fees <span class="muted">(weekly)</span></div>
+
+<h3>Deployment Guide</h3>
+
+<h4>EVM (Base Sepolia) &mdash; Foundry</h4>
+
+<pre><code><span class="comment"># Install Foundry</span>
+<span class="cmd">curl</span> -L https://foundry.paradigm.xyz | bash
+<span class="cmd">foundryup</span>
+
+<span class="comment"># Build & Test</span>
+<span class="cmd">cd</span> ~/hyperpie
+<span class="cmd">forge build</span>
+<span class="cmd">forge test</span>             <span class="comment"># run all tests</span>
+<span class="cmd">forge test</span> <span class="flag">--gas-report</span> <span class="comment"># with gas analysis</span>
+<span class="cmd">forge test</span> <span class="flag">-vvv</span>          <span class="comment"># verbose traces</span>
+
+<span class="comment"># Deploy full V2 system</span>
+<span class="cmd">forge script</span> contracts/IAO/scripts/deployIAOV2.s.sol:DeployIAOV2 \
+  <span class="flag">--rpc-url</span> $BASE_SEPOLIA_RPC_URL \
+  <span class="flag">--private-key</span> $PRIVATE_KEY \
+  <span class="flag">--broadcast --verify</span></code></pre>
+
+<div class="callout">
+  <strong>foundry.toml key settings:</strong> <code>evm_version = "cancun"</code> (required for Uniswap V4 tload/tstore), <code>via_ir = true</code> (avoids stack-too-deep errors)
+</div>
+
+<h4>Solana (Devnet) &mdash; Anchor</h4>
+
+<pre><code><span class="comment"># Install toolchain</span>
+<span class="cmd">sh</span> -c "$(curl -sSfL https://release.solana.com/v1.17.0/install)"
+<span class="cmd">cargo install</span> <span class="flag">--git</span> https://github.com/coral-xyz/anchor <span class="flag">--tag</span> v0.29.0 anchor-cli
+<span class="cmd">solana config set</span> <span class="flag">--url</span> devnet
+
+<span class="comment"># Build & Test</span>
+<span class="cmd">cd</span> ~/hyperpie/contracts/IAO/solana-program
+<span class="cmd">anchor build</span>   <span class="comment"># "IDL doesn't exist" warning is safe to ignore</span>
+<span class="cmd">anchor test</span>
+
+<span class="comment"># Deploy</span>
+<span class="cmd">anchor deploy</span> <span class="flag">--provider.cluster</span> devnet \
+  <span class="flag">--provider.wallet</span> ~/.config/solana/deploy-wallet.json</code></pre>
+
+<div class="callout warn">
+  <strong>Solana gotchas:</strong> 4KB stack limit per frame (split instructions with many <code>init</code> accounts). Addresses are base58 and <em>case-sensitive</em> &mdash; never call <code>.toLowerCase()</code>. Anchor 0.29 + CLI 0.32.1 version mismatch warnings are safe.
+</div>
+
+<h4>Deployed Addresses (Base Sepolia)</h4>
+<table>
+  <tr><th>Contract</th><th>Address</th></tr>
+  <tr><td>IAOTokenFactory</td><td><code>0x5a40F7f30b25D07aB1C06dEB7400554Bc20f8ad4</code></td></tr>
+  <tr><td>USDC (Mock)</td><td><code>0x036CbD53842c5426634e7929541eC2318f3dCF7e</code></td></tr>
+  <tr><td>Uniswap V4 Pool Manager</td><td><code>0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408</code></td></tr>
+  <tr><td>Position Manager</td><td><code>0x4B2C77d209D3405F41a037Ec6c77F7F5b8e2ca80</code></td></tr>
+  <tr><td>Permit2</td><td><code>0x000000000022D473030F116dDEE9F6B43aC78BA3</code></td></tr>
+</table>
+
+</section>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- SECTION 3: Token Mechanism -->
+<!-- ============================================================ -->
+<section id="tokens">
+<h2><span class="num">3</span> API Token Generation Mechanism</h2>
+
+<p>APIX uses a <strong>bonding curve token model</strong>: API usage generates tokens for callers. Tokens are tracked <strong>virtually off-chain</strong> (Firestore) during bonding, then distributed <strong>on-chain via Merkle proofs</strong> at graduation.</p>
+
+<h3>Token Lifecycle</h3>
+
+<div class="flow">
+  <div class="flow-step">
+    <div class="title" style="color:var(--accent)">1. Create</div>
+    <div class="sub">Register API server,<br>deploy on-chain token</div>
+  </div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-step">
+    <div class="title" style="color:var(--accent2)">2. Bonding</div>
+    <div class="sub">API calls earn<br>virtual tokens</div>
+  </div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-step">
+    <div class="title" style="color:var(--accent3)">3. Graduate</div>
+    <div class="sub">Merkle tree built,<br>liquidity deployed</div>
+  </div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-step">
+    <div class="title" style="color:var(--accent4)">4. Claim</div>
+    <div class="sub">Users redeem tokens<br>on-chain with proof</div>
+  </div>
+</div>
+
+<h3>Phase 1: Token Creation</h3>
+
+<p>A two-step registration flow:</p>
+
+<ol class="steps">
+  <li><strong>Validation</strong> &mdash; Frontend calls <code>POST /api/register</code> <em>without</em> <code>tokenAddress</code>. Backend validates slug uniqueness, API reachability (200 status), and no duplicates. Nothing is stored yet.</li>
+  <li><strong>On-chain + Registration</strong> &mdash; Frontend creates the token on-chain (<code>IAOTokenFactory.createToken()</code> for EVM, <code>create_token</code> for Solana), then calls <code>POST /api/register</code> <em>with</em> the <code>tokenAddress</code>. Backend stores the token entry in Firestore.</li>
+</ol>
+
+<div class="card">
+  <h4>Stored Token Entry (Firestore)</h4>
+  <pre><code>{
+  "id": "0xTokenAddress",
+  "slug": "my-api-server",
+  "name": "My API Token",
+  "symbol": "MYAPI",
+  "chainId": "84532",
+  "builder": "0xBuilderAddress",
+  "paymentToken": "0xUSDC",
+  "apis": [
+    { "slug": "chat", "apiUrl": "https://api.example.com/chat",
+      "fee": "10000", "method": "POST" }
+  ],
+  "virtualTokensDistributed": "0",
+  "distributionModel": "merkle",
+  "graduated": false
+}</code></pre>
+</div>
+
+<h3>Phase 2: Bonding Curve (API Calls Earn Tokens)</h3>
+
+<h4>"Pay After Success" Flow</h4>
+
+<div class="diagram"><span class="label">User</span>                    <span class="label">Backend Proxy</span>              <span class="label">Builder API</span>
+  |                         |                          |
+  |-- API request --------->|                          |
+  |   + PAYMENT-SIGNATURE   |                          |
+  |   <span class="muted">header (base64 JSON)</span>  |                          |
+  |                         |-- Verify payment ------->|  <span class="muted">(no settle yet)</span>
+  |                         |   <span class="muted">(sig, amount, recipient)</span>|
+  |                         |                          |
+  |                         |-- Forward request ------>|
+  |                         |   <span class="muted">+ X-IAO-Auth JWT</span>       |
+  |                         |                          |
+  |                         |<-- Response (2xx) -------|
+  |                         |                          |
+  |                         |-- Settle payment ------->|  <span class="muted">(NOW charge user)</span>
+  |                         |                          |
+  |                         |-- Accrue tokens -------->|  <span class="muted">(fire-and-forget)</span>
+  |                         |                          |
+  |<-- API response --------|                          |
+  |    <span class="muted">+ payment receipt</span>     |                          |</div>
+
+<div class="callout success">
+  <strong>Key principle:</strong> Users are <em>only charged</em> if the builder API returns a 2xx status.
+</div>
+
+<h4>Token Calculation</h4>
+
+<div class="card">
+  <pre><code>tokensEarned = (fee &times; paymentTokenPrice) / (10 ^ paymentTokenDecimals)</code></pre>
+  <p style="margin-top:12px"><strong>Example:</strong></p>
+  <ul>
+    <li>API fee: <code>10000</code> (0.01 USDC, 6 decimals)</li>
+    <li>paymentTokenPrice: <code>25,000,000,000,000,000,000,000</code> (25,000 tokens per USDC)</li>
+    <li>paymentTokenDecimals: <code>6</code></li>
+    <li><strong>Result:</strong> 250 tokens (with 18 decimals)</li>
+  </ul>
+</div>
+
+<h4>Atomic Firestore Update</h4>
+
+<p>After payment settles, <code>incrementVirtualDistributedWithEarnings()</code> updates <strong>two collections in a single Firestore transaction</strong> (no race conditions):</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h4>iao-tokens/{tokenAddress}</h4>
+    <ul>
+      <li><code>virtualTokensDistributed</code> += tokensEarned <span class="tag tag-orange">capped at threshold</span></li>
+      <li><code>totalFeesCollected</code> += fee</li>
+      <li><code>pendingFeesForDistribution</code> += fee</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>token-earnings/{addr}#{user}</h4>
+    <ul>
+      <li><code>totalTokensEarned</code> += tokensEarned</li>
+      <li><code>totalFeesPaid</code> += fee</li>
+      <li><code>callCount</code> += 1</li>
+    </ul>
+  </div>
+</div>
+
+<h4>Graduation Thresholds</h4>
+
+<table>
+  <tr><th>Chain</th><th>Threshold</th><th>Raw Value</th></tr>
+  <tr><td>EVM (Base Sepolia)</td><td>625,000,000 tokens</td><td><code>625000000000000000000000000</code> (18 dec)</td></tr>
+  <tr><td>Solana (Devnet)</td><td>625,000,000 tokens</td><td><code>625000000000000000</code> (9 dec)</td></tr>
+</table>
+<p>The threshold = 62.5% of 1 billion total supply. Can be overridden with <code>TEST_GRADUATION_THRESHOLD</code> env var.</p>
+
+<h3>Phase 3: Graduation</h3>
+
+<p>When <code>virtualTokensDistributed &ge; graduationThreshold</code>:</p>
+
+<ol class="steps">
+  <li><strong>Dispatch</strong> &mdash; <code>graduationDispatcher.ts</code> creates a named Cloud Task (<code>graduate-{tokenAddress}</code>)</li>
+  <li><strong>Lock</strong> &mdash; Backend acquires Firestore graduation lock (5-min TTL)</li>
+  <li><strong>Build Merkle Tree</strong> &mdash; From all <code>token-earnings</code> entries for this token</li>
+  <li><strong>Store tree</strong> in Firestore <code>merkle-trees/{tokenAddress}</code></li>
+  <li><strong>Invoke Cloud Function</strong> &mdash; Sets Merkle root on-chain + deploys liquidity (Uniswap V4 for EVM, Raydium CLMM for Solana)</li>
+  <li><strong>Confirm</strong> &mdash; Cloud Function calls back, backend sets <code>graduated: true</code></li>
+</ol>
+
+<div class="card-grid">
+  <div class="card">
+    <h4>Solana Leaf Hash</h4>
+    <pre><code>keccak256(keccak256(
+  pubkey_32bytes || amount_u64_le
+))</code></pre>
+  </div>
+  <div class="card">
+    <h4>EVM Leaf Hash (OpenZeppelin)</h4>
+    <pre><code>ABI.encode(
+  ['address', 'uint256'],
+  [userAddress, amount]
+)</code></pre>
+  </div>
+</div>
+
+<h3>Phase 4: Claiming</h3>
+
+<ol class="steps">
+  <li><strong>Get proof</strong> &mdash; <code>GET /api/earnings/:serverSlug/:userAddress</code> returns <code>{ totalTokensEarned, merkleProof[], merkleIndex }</code></li>
+  <li><strong>Submit claim on-chain</strong> &mdash; EVM: <code>IAOTokenV2.merkleClaim(amount, proof)</code> / Solana: <code>merkle_claim</code> instruction</li>
+  <li><strong>Backend updates</strong> &mdash; Sets <code>claimed: true</code> and <code>claimTxHash</code> in <code>token-earnings</code></li>
+</ol>
+
+<h3>Fee Distribution (Weekly)</h3>
+
+<ol class="steps">
+  <li>Cloud Scheduler triggers <code>POST /internal/trigger-fee-distribution</code></li>
+  <li>Backend groups non-graduated tokens by chain</li>
+  <li>Calls fee distribution Cloud Functions</li>
+  <li>On-chain split: <strong>builder share</strong> + <strong>team share</strong> + <strong>buyback</strong></li>
+  <li>Callback clears <code>pendingFeesForDistribution</code></li>
+</ol>
+
+</section>
+
+<hr>
+
+<!-- ============================================================ -->
+<!-- Quick Reference -->
+<!-- ============================================================ -->
+<section id="quickref">
+<h2><span class="num">Q</span> Quick Reference</h2>
+
+<h3>Full Deployment Checklist</h3>
+
+<ol class="steps">
+  <li>Deploy smart contracts (EVM via Foundry, Solana via Anchor)</li>
+  <li>Deploy backend to Cloud Run (<code>deploy-cloud-run.sh</code>)</li>
+  <li>Deploy cloud functions (<code>deploy-cloud-functions.sh</code>)</li>
+  <li>Create Cloud Tasks queue (<code>gcloud tasks queues create graduation-queue</code>)</li>
+  <li>Create Cloud Scheduler job (weekly fee distribution cron)</li>
+  <li>Configure all env vars (secrets, URLs, shared auth tokens)</li>
+  <li>Deploy frontend to Firebase Hosting (<code>firebase deploy --only hosting</code>)</li>
+</ol>
+
+<h3>Database Collections</h3>
+
+<table>
+  <tr><th>Collection</th><th>Document ID</th><th>Purpose</th></tr>
+  <tr><td><code>iao-tokens</code></td><td><code>{tokenAddress}</code></td><td>Token metadata, virtual distribution, graduation state</td></tr>
+  <tr><td><code>token-earnings</code></td><td><code>{tokenAddr}#{userAddr}</code></td><td>Per-user earnings, claim state</td></tr>
+  <tr><td><code>merkle-trees</code></td><td><code>{tokenAddress}</code></td><td>Merkle root, leaves, tree dump for proofs</td></tr>
+  <tr><td><code>graduation-locks</code></td><td><code>{tokenAddress}</code></td><td>5-min TTL lock for graduation dedup</td></tr>
+  <tr><td><code>api-metrics</code></td><td><code>{tokenAddr}_{apiSlug}</code></td><td>Success/failure, latency, revenue</td></tr>
+  <tr><td><code>user-requests</code></td><td><code>{tokenAddr}_{userAddr}_{#}</code></td><td>Individual call history</td></tr>
+</table>
+
+<h3>Key Backend Services</h3>
+
+<table>
+  <tr><th>Service</th><th>Role</th></tr>
+  <tr><td><code>firestoreTokenService.ts</code></td><td>Token CRUD, atomic virtual distribution</td></tr>
+  <tr><td><code>firestoreEarningsService.ts</code></td><td>Per-user earnings tracking</td></tr>
+  <tr><td><code>firestoreMerkleTreeService.ts</code></td><td>Merkle tree storage + proof generation</td></tr>
+  <tr><td><code>graduationDispatcher.ts</code></td><td>Named Cloud Task dispatch (dedup)</td></tr>
+  <tr><td><code>graduationLock.ts</code></td><td>5-min TTL Firestore lock</td></tr>
+  <tr><td><code>graduationNotifier.ts</code></td><td>Cloud Function invocation</td></tr>
+  <tr><td><code>multiChainPaymentService.ts</code></td><td>Verify &amp; settle payments (EVM + Solana)</td></tr>
+  <tr><td><code>evmContractService.ts</code></td><td>Read on-chain EVM state</td></tr>
+  <tr><td><code>solanaContractService.ts</code></td><td>Read Solana program state</td></tr>
+</table>
+
+</section>
+
+<footer>
+  APIX (IAO) &mdash; Initial API Offering &mdash; System Documentation
+</footer>
+
+</div>
+</body>
+</html>

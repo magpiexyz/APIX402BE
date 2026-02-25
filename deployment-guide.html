@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APIX/IAO Deployment Guide</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-card: #334155;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --success: #22c55e;
+      --warning: #eab308;
+      --error: #ef4444;
+      --border: #475569;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 0;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+      padding: 60px 20px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .header::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    }
+
+    .header h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+      position: relative;
+    }
+
+    .header p {
+      font-size: 1.1rem;
+      opacity: 0.9;
+      position: relative;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    .nav-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 15px;
+      margin-bottom: 40px;
+    }
+
+    .nav-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .nav-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(99, 102, 241, 0.2);
+    }
+
+    .nav-card .icon {
+      font-size: 2rem;
+      margin-bottom: 10px;
+    }
+
+    .nav-card .label {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .section {
+      background: var(--bg-secondary);
+      border-radius: 16px;
+      margin-bottom: 30px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .section-header {
+      background: var(--bg-card);
+      padding: 20px 25px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: background 0.3s ease;
+    }
+
+    .section-header:hover {
+      background: #3d4f66;
+    }
+
+    .section-header h2 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .section-header .icon {
+      font-size: 1.5rem;
+    }
+
+    .section-header .toggle {
+      font-size: 1.5rem;
+      transition: transform 0.3s ease;
+    }
+
+    .section.collapsed .toggle {
+      transform: rotate(-90deg);
+    }
+
+    .section-content {
+      padding: 25px;
+      display: block;
+    }
+
+    .section.collapsed .section-content {
+      display: none;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      padding: 12px 15px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      background: var(--bg-card);
+      font-weight: 600;
+      color: var(--accent);
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+    }
+
+    tr:hover {
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .code-block {
+      background: #0d1117;
+      border-radius: 8px;
+      margin: 15px 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .code-header {
+      background: var(--bg-card);
+      padding: 10px 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .copy-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .copy-btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .copy-btn.copied {
+      background: var(--success);
+    }
+
+    pre {
+      padding: 15px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: #e6edf3;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      background: var(--bg-card);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      color: #f97316;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .badge-success {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--success);
+    }
+
+    .badge-warning {
+      background: rgba(234, 179, 8, 0.2);
+      color: var(--warning);
+    }
+
+    .badge-info {
+      background: rgba(99, 102, 241, 0.2);
+      color: var(--accent);
+    }
+
+    .info-box {
+      background: rgba(99, 102, 241, 0.1);
+      border-left: 4px solid var(--accent);
+      padding: 15px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 15px 0;
+    }
+
+    .warning-box {
+      background: rgba(234, 179, 8, 0.1);
+      border-left: 4px solid var(--warning);
+      padding: 15px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 15px 0;
+    }
+
+    .success-box {
+      background: rgba(34, 197, 94, 0.1);
+      border-left: 4px solid var(--success);
+      padding: 15px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 15px 0;
+    }
+
+    .step-list {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+    }
+
+    .step-list li {
+      counter-increment: step;
+      padding: 15px 15px 15px 60px;
+      position: relative;
+      border-left: 2px solid var(--border);
+      margin-left: 20px;
+    }
+
+    .step-list li::before {
+      content: counter(step);
+      position: absolute;
+      left: -22px;
+      top: 15px;
+      width: 40px;
+      height: 40px;
+      background: var(--accent);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .step-list li:last-child {
+      border-left-color: transparent;
+    }
+
+    .env-table td:first-child {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--success);
+    }
+
+    .address {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: #f97316;
+      word-break: break-all;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border-radius: 12px;
+      padding: 20px;
+      border: 1px solid var(--border);
+    }
+
+    .card h4 {
+      color: var(--accent);
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
+
+    .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    @media (max-width: 768px) {
+      .header h1 {
+        font-size: 1.75rem;
+      }
+
+      .nav-cards {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>APIX/IAO Deployment Guide</h1>
+    <p>Complete deployment documentation for the Initial API Offering platform</p>
+  </div>
+
+  <div class="container">
+    <div class="nav-cards">
+      <a href="#contracts" class="nav-card">
+        <div class="icon">📜</div>
+        <div class="label">Contracts</div>
+      </a>
+      <a href="#backend" class="nav-card">
+        <div class="icon">🖥️</div>
+        <div class="label">Backend</div>
+      </a>
+      <a href="#functions" class="nav-card">
+        <div class="icon">⚡</div>
+        <div class="label">Functions</div>
+      </a>
+      <a href="#firestore" class="nav-card">
+        <div class="icon">🗄️</div>
+        <div class="label">Firestore</div>
+      </a>
+      <a href="#frontend" class="nav-card">
+        <div class="icon">🌐</div>
+        <div class="label">Frontend</div>
+      </a>
+      <a href="#quick-deploy" class="nav-card">
+        <div class="icon">🚀</div>
+        <div class="label">Quick Deploy</div>
+      </a>
+    </div>
+
+    <!-- Smart Contracts Section -->
+    <div class="section" id="contracts">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">📜</span> Smart Contracts (Base Sepolia)</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <table>
+          <thead>
+            <tr>
+              <th>Contract</th>
+              <th>Address</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>HyperpieConfig</strong></td>
+              <td><span class="address">0x203cDD30D70f6A40f3a55462DC9196DeeeC8aB0C</span></td>
+              <td>Role-based access control</td>
+            </tr>
+            <tr>
+              <td><strong>IAOTokenFactory</strong></td>
+              <td><span class="address">0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800</span></td>
+              <td>Creates new IAO tokens (Proxy)</td>
+            </tr>
+            <tr>
+              <td><strong>TokenDistributor</strong></td>
+              <td><span class="address">0x180160a4aca6A5913765571763a07D1158419B76</span></td>
+              <td>Batch graduation & fee distribution</td>
+            </tr>
+            <tr>
+              <td><strong>RoleCheckerLib</strong></td>
+              <td><span class="address">0x47478d7C5F08F5a4978c5062a2a2a43EfabADEdF</span></td>
+              <td>Library for role checks</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="info-box">
+          <strong>Network:</strong> Base Sepolia (Chain ID: 84532)<br>
+          <strong>Block Explorer:</strong> <a href="https://sepolia.basescan.org" target="_blank" style="color: var(--accent);">sepolia.basescan.org</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backend Section -->
+    <div class="section" id="backend">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🖥️</span> Backend (Cloud Run)</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="grid-2">
+          <div class="card">
+            <h4>📋 Service Info</h4>
+            <p><strong>Service:</strong> apix-backend-v2</p>
+            <p><strong>Region:</strong> us-central1</p>
+            <p><strong>URL:</strong></p>
+            <code style="font-size: 0.75rem; word-break: break-all;">https://apix-backend-v2-951726146933.us-central1.run.app</code>
+          </div>
+          <div class="card">
+            <h4>📁 Source</h4>
+            <p><code>/home/error0180/APIX402BE</code></p>
+            <p style="margin-top: 10px; color: var(--text-secondary); font-size: 0.9rem;">Express.js proxy server handling payments and request forwarding</p>
+          </div>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Deploy Command</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>bash</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>cd /home/error0180/APIX402BE
+gcloud run deploy apix-backend-v2 --source . --region us-central1 --allow-unauthenticated</pre>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Environment Variables</h3>
+        <table class="env-table">
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Description</th>
+              <th>Required</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GCP_PROJECT_ID</td>
+              <td>trim-dahlia-485008-u2</td>
+              <td><span class="badge badge-success">Required</span></td>
+            </tr>
+            <tr>
+              <td>THIRDWEB_SECRET_KEY</td>
+              <td>Thirdweb API key for payment processing</td>
+              <td><span class="badge badge-success">Required</span></td>
+            </tr>
+            <tr>
+              <td>THIRDWEB_SERVER_WALLET_ADDRESS</td>
+              <td>Facilitator wallet address</td>
+              <td><span class="badge badge-success">Required</span></td>
+            </tr>
+            <tr>
+              <td>BUILDER_SECRET_PHRASE</td>
+              <td>JWT signing secret for builder auth</td>
+              <td><span class="badge badge-success">Required</span></td>
+            </tr>
+            <tr>
+              <td>TEST_GRADUATION_THRESHOLD</td>
+              <td>Override graduation threshold for testing</td>
+              <td><span class="badge badge-warning">Optional</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Cloud Functions Section -->
+    <div class="section" id="functions">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">⚡</span> Cloud Functions (Gen2)</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="grid-2">
+          <div class="card">
+            <h4>🎓 graduation-evm</h4>
+            <p><strong>Trigger:</strong> HTTP (via Cloud Tasks)</p>
+            <p><strong>Source:</strong> <code>cloud-functions/graduation-evm/</code></p>
+            <p style="margin-top: 10px; color: var(--text-secondary); font-size: 0.9rem;">Executes on-chain graduation and distributes fees</p>
+          </div>
+          <div class="card">
+            <h4>💰 fee-distribution-evm</h4>
+            <p><strong>Trigger:</strong> HTTP (via Cloud Scheduler)</p>
+            <p><strong>Source:</strong> <code>cloud-functions/fee-distribution-evm/</code></p>
+            <p style="margin-top: 10px; color: var(--text-secondary); font-size: 0.9rem;">Weekly batch fee distribution to builders</p>
+          </div>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Deploy Commands</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>graduation-evm</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>cd /home/error0180/APIX402BE/cloud-functions/graduation-evm
+gcloud functions deploy graduation-evm \
+  --gen2 \
+  --runtime=nodejs20 \
+  --trigger-http \
+  --region=us-central1 \
+  --entry-point=graduateToken</pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-header">
+            <span>fee-distribution-evm</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>cd /home/error0180/APIX402BE/cloud-functions/fee-distribution-evm
+gcloud functions deploy fee-distribution-evm \
+  --gen2 \
+  --runtime=nodejs20 \
+  --trigger-http \
+  --region=us-central1 \
+  --entry-point=distributeFeesEvm</pre>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Environment Variables (Both Functions)</h3>
+        <table class="env-table">
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>AUTOMATION_PRIVATE_KEY</td>
+              <td>Minter wallet private key</td>
+            </tr>
+            <tr>
+              <td>RPC_URL</td>
+              <td>https://sepolia.base.org</td>
+            </tr>
+            <tr>
+              <td>TOKEN_DISTRIBUTOR</td>
+              <td>0x180160a4aca6A5913765571763a07D1158419B76</td>
+            </tr>
+            <tr>
+              <td>BACKEND_URL</td>
+              <td>Cloud Run service URL</td>
+            </tr>
+            <tr>
+              <td>FEE_DISTRIBUTION_SECRET</td>
+              <td>Shared secret for internal auth</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Cloud Scheduler (Weekly Fee Distribution)</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>Create scheduler job</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>gcloud scheduler jobs create http fee-distribution-weekly \
+  --schedule="0 0 * * 0" \
+  --uri="https://fee-distribution-evm-XXXXX.run.app" \
+  --http-method=POST \
+  --headers="X-Fee-Distribution-Secret=YOUR_SECRET"</pre>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Cloud Tasks Queue</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>Create queue</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>gcloud tasks queues create graduation-queue --location=us-central1</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firestore Section -->
+    <div class="section" id="firestore">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🗄️</span> Firestore Collections</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <table>
+          <thead>
+            <tr>
+              <th>Collection</th>
+              <th>Document ID</th>
+              <th>Key Fields</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>iao-tokens</strong></td>
+              <td><code>{tokenAddress}</code></td>
+              <td>slug, name, symbol, apis[], chainId, virtualTokensDistributed, totalFeesCollected, pendingFeesForDistribution, isGraduated</td>
+            </tr>
+            <tr>
+              <td><strong>user-earnings</strong></td>
+              <td><code>{tokenAddress}_{userAddress}</code></td>
+              <td>totalTokensEarned, totalFeesPaid, callCount, claimed, claimTxHash</td>
+            </tr>
+            <tr>
+              <td><strong>user-requests</strong></td>
+              <td><code>{tokenAddress}_{userAddress}_{requestNum}</code></td>
+              <td>iaoToken, userAddress, timestamp, fee, tokensEarned</td>
+            </tr>
+            <tr>
+              <td><strong>api-metrics</strong></td>
+              <td><code>{tokenAddress}_{apiSlug}</code></td>
+              <td>totalCalls, successCount, totalLatency, lastCallAt</td>
+            </tr>
+            <tr>
+              <td><strong>agents</strong></td>
+              <td><code>{agentId}</code></td>
+              <td>name, description, tools[], llmProvider, ownerAddress</td>
+            </tr>
+            <tr>
+              <td><strong>chat-sessions</strong></td>
+              <td><code>{sessionId}</code></td>
+              <td>agentId, userAddress, createdAt</td>
+            </tr>
+            <tr>
+              <td><strong>chat-messages</strong></td>
+              <td><code>{messageId}</code></td>
+              <td>sessionId, role, content, timestamp</td>
+            </tr>
+            <tr>
+              <td><strong>chain-configs</strong></td>
+              <td><code>{chainId}</code></td>
+              <td>rpcUrl, factoryAddress, paymentToken</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="info-box">
+          <strong>Console:</strong> <a href="https://console.firebase.google.com/project/trim-dahlia-485008-u2/firestore" target="_blank" style="color: var(--accent);">Firebase Console</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Frontend Section -->
+    <div class="section" id="frontend">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🌐</span> Frontend (Firebase Hosting)</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="grid-2">
+          <div class="card">
+            <h4>📋 Hosting Info</h4>
+            <p><strong>URL:</strong> <a href="https://apix-v2.web.app" target="_blank" style="color: var(--accent);">https://apix-v2.web.app</a></p>
+            <p><strong>Framework:</strong> React + Vite</p>
+          </div>
+          <div class="card">
+            <h4>📁 Source</h4>
+            <p><code>/home/error0180/APIX402FE</code></p>
+          </div>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Deploy Commands</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>bash</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>cd /home/error0180/APIX402FE
+npm run build
+firebase deploy --only hosting</pre>
+        </div>
+
+        <h3 style="margin: 25px 0 15px; color: var(--text-primary);">Environment Variables (.env.production)</h3>
+        <div class="code-block">
+          <div class="code-header">
+            <span>.env.production</span>
+            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>VITE_API_BASE_URL=https://apix-backend-v2-951726146933.us-central1.run.app</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- IAM Roles Section -->
+    <div class="section" id="iam">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🔐</span> Required IAM Roles</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <table>
+          <thead>
+            <tr>
+              <th>Service Account</th>
+              <th>Role</th>
+              <th>Resource</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cloud Run SA</td>
+              <td><code>roles/cloudtasks.enqueuer</code></td>
+              <td>graduation-queue</td>
+            </tr>
+            <tr>
+              <td>Cloud Functions SA</td>
+              <td><code>roles/run.invoker</code></td>
+              <td>Cloud Run</td>
+            </tr>
+            <tr>
+              <td>Factory Contract</td>
+              <td><code>DEFAULT_ADMIN_ROLE</code></td>
+              <td>HyperpieConfig</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Quick Deploy Section -->
+    <div class="section" id="quick-deploy">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🚀</span> Quick Full Deploy</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="success-box">
+          <strong>One-command deployment sequence</strong><br>
+          Run these commands in order to deploy all services.
+        </div>
+
+        <ol class="step-list">
+          <li>
+            <strong>Deploy Backend (Cloud Run)</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>cd /home/error0180/APIX402BE && gcloud run deploy apix-backend-v2 --source . --region us-central1 --allow-unauthenticated</pre>
+            </div>
+          </li>
+          <li>
+            <strong>Deploy Graduation Function</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>cd /home/error0180/APIX402BE/cloud-functions/graduation-evm && gcloud functions deploy graduation-evm --gen2 --runtime=nodejs20 --trigger-http --region=us-central1 --entry-point=graduateToken</pre>
+            </div>
+          </li>
+          <li>
+            <strong>Deploy Fee Distribution Function</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>cd /home/error0180/APIX402BE/cloud-functions/fee-distribution-evm && gcloud functions deploy fee-distribution-evm --gen2 --runtime=nodejs20 --trigger-http --region=us-central1 --entry-point=distributeFeesEvm</pre>
+            </div>
+          </li>
+          <li>
+            <strong>Deploy Frontend</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>cd /home/error0180/APIX402FE && npm run build && firebase deploy --only hosting</pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Testing Section -->
+    <div class="section" id="testing">
+      <div class="section-header" onclick="toggleSection(this)">
+        <h2><span class="icon">🧪</span> Testing Graduation (Low Threshold)</h2>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="warning-box">
+          <strong>For testing only!</strong> This allows graduation with small amounts instead of the production 25k USDC threshold.
+        </div>
+
+        <ol class="step-list">
+          <li>
+            <strong>Enable test threshold</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>gcloud run services update apix-backend-v2 --region=us-central1 \
+  --set-env-vars="TEST_GRADUATION_THRESHOLD=1250000000000000000000"</pre>
+            </div>
+          </li>
+          <li>
+            <strong>Register a test server</strong> with $0.01 API fee
+          </li>
+          <li>
+            <strong>Make 5 API calls</strong> to trigger graduation
+          </li>
+          <li>
+            <strong>Disable test threshold</strong>
+            <div class="code-block" style="margin-top: 10px;">
+              <div class="code-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              </div>
+              <pre>gcloud run services update apix-backend-v2 --region=us-central1 \
+  --remove-env-vars="TEST_GRADUATION_THRESHOLD"</pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <p>APIX/IAO Platform &bull; Built with Cloud Run, Firebase, and Base</p>
+    <p style="margin-top: 10px;">
+      <a href="https://apix-v2.web.app">Live App</a> &bull;
+      <a href="https://sepolia.basescan.org/address/0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800">Factory Contract</a>
+    </p>
+  </div>
+
+  <script>
+    function toggleSection(header) {
+      const section = header.parentElement;
+      section.classList.toggle('collapsed');
+    }
+
+    function copyCode(btn) {
+      const pre = btn.closest('.code-block').querySelector('pre');
+      navigator.clipboard.writeText(pre.textContent).then(() => {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    }
+
+    // Smooth scroll for nav cards
+    document.querySelectorAll('.nav-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.querySelector(card.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          // Ensure section is expanded
+          target.classList.remove('collapsed');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "graduation-evm-function",
+  "version": "1.0.0",
+  "description": "Cloud Function to execute EVM on-chain graduation via TokenDistributor.graduateTokenWithMerkle",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "gcp-build": "tsc",
+    "build": "tsc",
+    "start": "npx functions-framework --target=graduateEvm --source=dist/"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}

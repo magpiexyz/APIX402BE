@@ -1,0 +1,62 @@
+{
+  "name": "express",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node api/dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@google-cloud/firestore": "^7.10.0",
+    "@google-cloud/tasks": "^5.5.0",
+    "@google/generative-ai": "^0.24.1",
+    "@openzeppelin/merkle-tree": "^1.0.8",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@x402/core": "^2.4.0",
+    "bs58": "^6.0.0",
+    "cloudinary": "^2.9.0",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.2.1",
+    "firebase-admin": "^13.6.0",
+    "fzstd": "^0.1.1",
+    "jsonwebtoken": "^9.0.3",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.15.0",
+    "uuid": "^9.0.0",
+    "viem": "^2.46.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^9.0.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "tsx": "^4.20.6",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  },
+  "resolutions": {
+    "@solana/codecs-core": "2.1.1",
+    "@solana/codecs-numbers": "2.1.1",
+    "@solana/codecs-strings": "2.1.1",
+    "@solana/codecs-data-structures": "2.1.1",
+    "@solana/codecs": "2.1.1",
+    "@solana/rpc-types": "2.1.1",
+    "@solana/kit": "2.1.1"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}

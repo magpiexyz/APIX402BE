@@ -1,0 +1,5275 @@
+import express from 'express'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { config } from 'dotenv'
+import cors from 'cors'
+import { HTTPFacilitatorClient } from '@x402/core/server'
+import { baseSepolia } from 'viem/chains'
+import fetch from 'node-fetch'
+import { decompress as decompressZstd } from 'fzstd'
+import { Connection, Transaction } from '@solana/web3.js'
+import bs58 from 'bs58'
+import { TokenService, IAOTokenDBEntry, ApiEntry } from './services/firestoreTokenService.js'
+import { UserRequestService } from './services/firestoreUserRequestService.js'
+import { MetricsService } from './services/firestoreMetricsService.js'
+import { EarningsService } from './services/firestoreEarningsService.js'
+import { MerkleTreeService } from './services/firestoreMerkleTreeService.js'
+import { AgentService, CreateAgentParams } from './services/firestoreAgentService.js'
+import { ChatSessionService } from './services/firestoreChatSessionService.js'
+import { LLMService } from './services/llmService.js'
+import { AgentToolService } from './services/agentToolService.js'
+import { AgentPaymentService } from './services/firestoreAgentPaymentService.js'
+import { ChainConfigService, DEFAULT_CHAIN_CONFIGS } from './services/firestoreChainConfigService.js'
+import { generateBuilderJWT } from './utils/jwtAuth.js'
+import { getCached, setCached, getOrSet, CacheKeys, CacheTTL, invalidateCache } from './services/firestoreCacheService.js'
+import { globalRateLimiter, apiProxyRateLimiters } from './middleware/rateLimiter.js'
+import { v2 as cloudinary } from 'cloudinary'
+import { dispatchGraduationTask } from './services/graduationDispatcher.js'
+import { normalizeAddress } from './utils/normalizeAddress.js'
+import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
+import { notifyForGraduation } from './services/graduationNotifier.js'
+import { EVMContractService } from './services/evmContractService.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+
+// IAO Token Factory address (from constants or env)
+const IAO_FACTORY_ADDRESS = "0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800";
+
+// Load environment variables
+config()
+
+// EVM contract service — viem-based, no Thirdweb dependency
+const evmContractService = new EVMContractService(IAO_FACTORY_ADDRESS)
+
+// Configure Cloudinary for logo uploads
+if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  })
+  console.log('✅ Cloudinary configured for logo uploads')
+} else {
+  console.log('⚠️  Cloudinary credentials not found - logo uploads will be disabled')
+}
+
+const app = express()
+
+// Add CORS middleware with explicit configuration
+const corsOptions = {
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'PAYMENT-SIGNATURE', 'X-PAYMENT', 'X-Api-Version'],
+  credentials: true,
+  optionsSuccessStatus: 200
+}
+app.use(cors(corsOptions))
+
+// Handle preflight OPTIONS requests explicitly
+app.options('*', cors(corsOptions))
+
+app.use(express.json({ limit: '10mb' }))  // Increased for base64 image responses
+
+// Apply global rate limiter (excludes /health and /)
+app.use(globalRateLimiter)
+
+// Health check endpoint for load testing and monitoring
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() })
+})
+
+// Serve static files from public directory (built frontend)
+// Only serve static files if public directory exists (frontend has been built)
+const publicPath = path.join(__dirname, '..', 'public')
+import { existsSync } from 'fs'
+import { Console } from 'console'
+
+if (existsSync(publicPath)) {
+  app.use(express.static(publicPath))
+  
+  // Serve frontend for all non-API routes (SPA routing)
+  app.get('*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api/')) {
+      return next()
+    }
+    // Serve index.html for frontend routes
+    const indexPath = path.join(publicPath, 'index.html')
+    if (existsSync(indexPath)) {
+      res.sendFile(indexPath)
+    } else {
+      next()
+    }
+  })
+} else {
+  console.warn('⚠️  Frontend not built yet. Run "cd frontend && npm install && npm run build" to build the frontend.')
+}
+
+const BASE_RPC_URL = "https://sepolia.base.org"
+const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com"
+
+// Address validation helpers for multi-chain support
+const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/i
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/  // Base58, 32-44 chars
+
+/**
+ * Validate an EVM address (0x + 40 hex chars)
+ */
+function isValidEvmAddress(address: string): boolean {
+  return EVM_ADDRESS_REGEX.test(address)
+}
+
+/**
+ * Validate a Solana address (base58, 32-44 chars)
+ */
+function isValidSolanaAddress(address: string): boolean {
+  return SOLANA_ADDRESS_REGEX.test(address)
+}
+
+/**
+ * Validate an address based on chain type
+ */
+function isValidAddressForChain(address: string, chainType: "evm" | "solana"): boolean {
+  if (chainType === "solana") {
+    return isValidSolanaAddress(address)
+  }
+  return isValidEvmAddress(address)
+}
+
+/**
+ * Get chain type from chainId (fallback to evm if not found)
+ */
+function getChainTypeFromId(chainId: string): "evm" | "solana" {
+  // Known Solana chains
+  if (chainId === "devnet" || chainId === "mainnet-beta" || chainId === "testnet") {
+    return "solana"
+  }
+  // Default to EVM
+  return "evm"
+}
+
+// JWT Authentication for Builder API
+const BUILDER_SECRET_PHRASE = process.env.BUILDER_SECRET_PHRASE || ""
+if (!BUILDER_SECRET_PHRASE) {
+  console.warn("⚠️  BUILDER_SECRET_PHRASE not set - Builder API authentication will be disabled")
+  console.log("   Set BUILDER_SECRET_PHRASE environment variable to enable JWT authentication")
+  console.log("   This should be a shared secret phrase between you and the builder")
+}
+
+// Service initialization
+const LEGACY_REGION = process.env.LEGACY_REGION || "us-west-1"
+const USER_REQUEST_TABLE_NAME = "apix-iao-user-requests"
+const REQUEST_QUEUE_TABLE_NAME = "apix-iao-request-queue"
+let tokenService: TokenService | null = null
+let userRequestService: UserRequestService | null = null
+
+try {
+  tokenService = new TokenService()
+  console.log(`✅ Token service initialized (Firestore)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Token service:", error)
+}
+
+try {
+  userRequestService = new UserRequestService(LEGACY_REGION, USER_REQUEST_TABLE_NAME, REQUEST_QUEUE_TABLE_NAME)
+  console.log(`✅ UserRequest service initialized (UserRequest Table: ${USER_REQUEST_TABLE_NAME}, RequestQueue Table: ${REQUEST_QUEUE_TABLE_NAME})`)
+  } catch (error) {
+  console.error("⚠️  Failed to initialize UserRequest service:", error)
+  console.log("   Set USER_REQUEST_TABLE_NAME and REQUEST_QUEUE_TABLE_NAME environment variables if needed")
+}
+
+// Metrics Service initialization
+const METRICS_TABLE_NAME = "apix-iao-metrics"
+let metricsService: MetricsService | null = null
+try {
+  metricsService = new MetricsService(LEGACY_REGION, METRICS_TABLE_NAME)
+  console.log(`✅ Metrics service initialized (Table: ${METRICS_TABLE_NAME})`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Metrics service:", error)
+  console.log("   Set METRICS_TABLE_NAME environment variable if needed")
+}
+
+// Agent Service initialization
+const AGENTS_TABLE_NAME = "apix-iao-agents"
+const CHAT_SESSIONS_TABLE_NAME = "apix-iao-chat-sessions"
+const CHAT_MESSAGES_TABLE_NAME = "apix-iao-chat-messages"
+const AGENT_PAYMENTS_TABLE_NAME = "apix-iao-agent-payments"
+const METRICS_TABLE_NAME_FOR_AGENTS = "apix-iao-metrics" // For reference
+
+let agentService: AgentService | null = null
+let chatSessionService: ChatSessionService | null = null
+
+try {
+  agentService = new AgentService(LEGACY_REGION, AGENTS_TABLE_NAME)
+  console.log(`✅ Agent service initialized (Table: ${AGENTS_TABLE_NAME})`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Agent service:", error)
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
+}
+
+try {
+  chatSessionService = new ChatSessionService(
+    LEGACY_REGION,
+    CHAT_SESSIONS_TABLE_NAME,
+    CHAT_MESSAGES_TABLE_NAME
+  )
+  console.log(`✅ Chat session service initialized (Tables: ${CHAT_SESSIONS_TABLE_NAME}, ${CHAT_MESSAGES_TABLE_NAME})`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Chat session service:", error)
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
+}
+
+// LLM Service initialization
+let llmService: LLMService | null = null
+try {
+  llmService = new LLMService()
+  const availableProviders = llmService.getAvailableProviders()
+  if (availableProviders.length > 0) {
+    console.log(`✅ LLM service initialized (Available providers: ${availableProviders.join(', ')})`)
+  } else {
+    console.warn("⚠️  No LLM providers configured. Set LLM API keys to enable agent chat:")
+    console.log("   - ANTHROPIC_API_KEY for Claude (recommended)")
+    console.log("   - OPENAI_API_KEY for GPT")
+    console.log("   - GOOGLE_AI_API_KEY for Gemini")
+  }
+} catch (error) {
+  console.error("⚠️  Failed to initialize LLM service:", error)
+}
+
+// Agent Tool Service initialization
+let agentToolService: AgentToolService | null = null
+try {
+  // Determine backend URL (for self-referencing API calls)
+  // Priority: BACKEND_URL env var > Vercel URL > localhost
+  const backendUrl =
+    process.env.BACKEND_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined) ||
+    `http://localhost:${process.env.PORT || 3000}`
+
+  agentToolService = new AgentToolService(backendUrl)
+  console.log(`✅ Agent tool service initialized with URL: ${backendUrl}`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Agent tool service:", error)
+}
+
+// Agent Payment Service initialization
+let agentPaymentService: AgentPaymentService | null = null
+try {
+  agentPaymentService = new AgentPaymentService(
+    LEGACY_REGION,
+    AGENT_PAYMENTS_TABLE_NAME,
+    process.env.THIRDWEB_SERVER_WALLET_ADDRESS
+  )
+  console.log(`✅ Agent payment service initialized (Table: ${AGENT_PAYMENTS_TABLE_NAME})`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Agent payment service:", error)
+  console.log("   Run CREATE_AGENT_TABLES.sh to create Firestore tables")
+}
+
+// Earnings Service initialization (Merkle claim distribution)
+let earningsService: EarningsService | null = null
+let merkleTreeService: MerkleTreeService | null = null
+try {
+  earningsService = new EarningsService()
+  console.log(`✅ Earnings service initialized (Collection: token-earnings)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize Earnings service:", error)
+}
+
+try {
+  merkleTreeService = new MerkleTreeService()
+  console.log(`✅ MerkleTree service initialized (Collection: merkle-trees)`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize MerkleTree service:", error)
+}
+
+// Chain Config Service initialization
+const CHAIN_CONFIG_TABLE_NAME = process.env.CHAIN_CONFIG_TABLE_NAME || "apix-chain-configs"
+let chainConfigService: ChainConfigService | null = null
+try {
+  chainConfigService = new ChainConfigService(LEGACY_REGION, CHAIN_CONFIG_TABLE_NAME)
+  console.log(`✅ Chain config service initialized (Table: ${CHAIN_CONFIG_TABLE_NAME})`)
+  // Seed default configs on startup
+  chainConfigService.seedDefaultConfigs().catch(err => {
+    console.error("⚠️  Failed to seed chain configs:", err)
+  })
+} catch (error) {
+  console.error("⚠️  Failed to initialize Chain config service:", error)
+}
+
+
+// normalizeAddress imported from ./utils/normalizeAddress.js
+
+/**
+ * Extract user address from payment data (PAYMENT-SIGNATURE header - x402 V2)
+ * The payment data is base64-encoded JSON containing the authorization
+ */
+function extractUserAddressFromPayment(paymentData: string): string | null {
+  try {
+    // Decode base64
+    const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+    const paymentProof = JSON.parse(decoded)
+
+    // Extract from address from authorization
+    if (paymentProof?.payload?.authorization?.from) {
+      return normalizeAddress(paymentProof.payload.authorization.from)
+    }
+
+    return null
+  } catch (error) {
+    console.error("Error extracting user address from payment data:", error)
+    return null
+  }
+}
+
+// IAO Token Types (internal representation for proxy logic)
+interface IAOTokenEntry {
+  id: string                // Token address (used as identifier)
+  slug: string              // Unique server slug (e.g., "magpie")
+  builder: string           // Builder address
+  name: string              // Token/server name
+  symbol: string            // Token symbol
+  subscriptionCount?: string // Total usage count (aggregated across all APIs)
+  totalFeesCollected?: string // Total fees collected (for Solana bonding progress)
+  paymentToken: string      // Payment token address (e.g., USDC)
+  chainId?: string          // Chain ID: "84532" (Base Sepolia), "devnet" (Solana), etc.
+  tags?: string[]           // Array of category tags
+  logoUrl?: string          // Cloudinary URL for server logo
+  apis: ApiEntry[]          // Array of registered APIs (each with own fee)
+}
+
+/**
+ * Get IAO token entry by token address (id) from Firestore
+ */
+async function getIAOTokenEntry(tokenAddress: string): Promise<IAOTokenEntry | null> {
+  if (!tokenService) {
+    console.error("Firestore service not configured")
+    return null
+  }
+
+  try {
+    const dbEntry = await tokenService.getItem(tokenAddress)
+    if (dbEntry) {
+      // Convert Firestore entry to IAOTokenEntry format
+      const tokenEntry: IAOTokenEntry = {
+        id: dbEntry.id,
+        slug: dbEntry.slug,
+        builder: dbEntry.builder,
+        name: dbEntry.name,
+        symbol: dbEntry.symbol,
+        subscriptionCount: dbEntry.subscriptionCount,
+        totalFeesCollected: dbEntry.totalFeesCollected,
+        paymentToken: dbEntry.paymentToken,
+        chainId: dbEntry.chainId,
+        tags: dbEntry.tags,
+        logoUrl: dbEntry.logoUrl,
+        apis: dbEntry.apis || [],
+      }
+      console.log(`✅ Found IAO token in Firestore: ${tokenAddress} (slug: ${dbEntry.slug}, ${dbEntry.apis?.length || 0} APIs)`)
+      return tokenEntry
+    }
+    console.log(`❌ No IAO token entry found for ${tokenAddress}`)
+    return null
+  } catch (error) {
+    console.error(`Error querying Firestore for ${tokenAddress}:`, error)
+    return null
+  }
+}
+
+/**
+ * Get IAO token entry by server slug from Firestore (with caching)
+ * Uses Firestore-backed cache for fast repeated lookups
+ */
+async function getIAOTokenEntryBySlug(serverSlug: string): Promise<IAOTokenEntry | null> {
+  if (!tokenService) {
+    console.error("Firestore service not configured")
+    return null
+  }
+
+  const cacheKey = CacheKeys.SERVER_BY_SLUG(serverSlug)
+
+  try {
+    // Check cache first
+    const cacheResult = await getCached<IAOTokenEntry>(cacheKey)
+    if (cacheResult && !cacheResult.isExpired && cacheResult.data) {
+      console.log(`✅ Cache HIT for slug: ${serverSlug}`)
+      return cacheResult.data
+    }
+
+    // Cache miss or expired - fetch from Firestore
+    const dbEntry = await tokenService.getItemBySlug(serverSlug)
+    if (dbEntry) {
+      const tokenEntry: IAOTokenEntry = {
+        id: dbEntry.id,
+        slug: dbEntry.slug,
+        builder: dbEntry.builder,
+        name: dbEntry.name,
+        symbol: dbEntry.symbol,
+        subscriptionCount: dbEntry.subscriptionCount,
+        totalFeesCollected: dbEntry.totalFeesCollected,
+        paymentToken: dbEntry.paymentToken,
+        chainId: dbEntry.chainId,
+        tags: dbEntry.tags,
+        logoUrl: dbEntry.logoUrl,
+        apis: dbEntry.apis || [],
+      }
+
+      // Cache the result for 5 minutes
+      await setCached(cacheKey, tokenEntry, CacheTTL.MEDIUM)
+
+      console.log(`✅ Found IAO token by slug: ${serverSlug} (${dbEntry.apis?.length || 0} APIs) - cached`)
+      return tokenEntry
+    }
+    console.log(`❌ No IAO token entry found for slug: ${serverSlug}`)
+    return null
+  } catch (error) {
+    console.error(`Error querying Firestore for slug ${serverSlug}:`, error)
+
+    // If cache had stale data, use it as fallback
+    const cacheResult = await getCached<IAOTokenEntry>(cacheKey)
+    if (cacheResult?.data) {
+      console.warn(`⚠️ Using stale cache for slug: ${serverSlug} due to DB error`)
+      return cacheResult.data
+    }
+
+    return null
+  }
+}
+
+/**
+ * Get a specific API from a token by slug
+ */
+function getApiFromTokenBySlug(token: IAOTokenEntry, apiSlug: string): ApiEntry | null {
+  if (!token.apis || token.apis.length === 0) {
+    return null
+  }
+  return token.apis.find(api => api.slug === apiSlug.toLowerCase()) || null
+}
+
+/**
+ * Get a specific API from a token by index
+ */
+function getApiFromToken(token: IAOTokenEntry, apiIndex: number): ApiEntry | null {
+  if (!token.apis || token.apis.length === 0) {
+    return null
+  }
+  return token.apis.find(api => api.index === apiIndex) || null
+}
+
+/**
+ * Sanitize API entry for public response (hide builder endpoint URL)
+ */
+function sanitizeApiForPublic(api: ApiEntry): Omit<ApiEntry, 'apiUrl'> {
+  const { apiUrl, ...publicApi } = api
+  return publicApi
+}
+
+/**
+ * Sanitize array of API entries for public response
+ */
+function sanitizeApisForPublic(apis: ApiEntry[]): Omit<ApiEntry, 'apiUrl'>[] {
+  return apis.map(sanitizeApiForPublic)
+}
+
+
+// x402 Facilitator client — official @x402/core HTTPFacilitatorClient
+// Default: https://x402.org/facilitator (Coinbase CDP)
+// Override with X402_FACILITATOR_URL env var
+let openFacilitator: HTTPFacilitatorClient | null = null
+
+try {
+  openFacilitator = new HTTPFacilitatorClient({
+    url: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+  })
+  console.log(`✅ x402 Facilitator initialized: ${process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator'}`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize x402 Facilitator:", error)
+  console.log("   Set X402_FACILITATOR_URL to override the default facilitator URL")
+}
+
+
+/**
+ * Validate slug format: lowercase alphanumeric with hyphens, 3-30 chars
+ */
+function isValidSlug(slug: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/.test(slug)
+}
+
+/**
+ * Valid category tags for API servers
+ */
+const VALID_CATEGORY_TAGS = [
+  'crypto',
+  'blockchain',
+  'ai',
+  'ml',
+  'trading',
+  'data',
+  'analytics',
+  'infrastructure',
+  'social',
+  'media',
+  'finance',
+  'gaming',
+] as const
+
+type CategoryTag = typeof VALID_CATEGORY_TAGS[number]
+
+/**
+ * Validate category tags
+ */
+function validateTags(tags: any): string[] | null {
+  if (!tags) return []
+  if (!Array.isArray(tags)) return null
+  
+  const normalizedTags: string[] = []
+  for (const tag of tags) {
+    if (typeof tag !== 'string') return null
+    const normalizedTag = tag.toLowerCase().trim()
+    if (!normalizedTag) continue
+    
+    // Check if tag is valid
+    if (!VALID_CATEGORY_TAGS.includes(normalizedTag as CategoryTag)) {
+      return null // Invalid tag found
+    }
+    
+    // Avoid duplicates
+    if (!normalizedTags.includes(normalizedTag)) {
+      normalizedTags.push(normalizedTag)
+    }
+  }
+  
+  return normalizedTags.length > 0 ? normalizedTags : []
+}
+
+/**
+ * Configuration for async proxy polling
+ */
+const PROXY_POLLING_CONFIG = {
+  pollIntervalMs: 5000,        // 5 seconds between polls
+  maxDurationMs: 5 * 60 * 1000, // 5 minutes max
+  maxAttempts: 60,             // Max poll attempts
+}
+
+/**
+ * Poll for async API result
+ * Used by proxy to automatically poll status URL when API returns 202
+ */
+async function pollForProxyResult(
+  statusUrl: string,
+  baseUrl: string,
+  maxDurationMs: number = PROXY_POLLING_CONFIG.maxDurationMs
+): Promise<{ success: boolean; status: number; result?: any; error?: string }> {
+  const startTime = Date.now()
+  let attempts = 0
+
+  // Resolve relative URL to absolute
+  const fullStatusUrl = statusUrl.startsWith('http')
+    ? statusUrl
+    : new URL(statusUrl, baseUrl).toString()
+
+  console.log(`⏳ Starting async polling for: ${fullStatusUrl}`)
+
+  while (Date.now() - startTime < maxDurationMs && attempts < PROXY_POLLING_CONFIG.maxAttempts) {
+    attempts++
+
+    try {
+      const response = await fetch(fullStatusUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      })
+
+      const data = await response.json() as Record<string, any>
+
+      if (response.status === 200) {
+        // Check if still processing (some APIs return 200 with status field)
+        if (data?.status === 'processing' || data?.status === 'pending') {
+          console.log(`⏳ Poll ${attempts}: Still processing...`)
+          await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+          continue
+        }
+
+        // Check for failure status
+        if (data?.status === 'failed' || data?.status === 'error') {
+          console.log(`❌ Poll ${attempts}: Job failed`)
+          return { success: false, status: 500, error: data?.error || data?.message || 'Job failed' }
+        }
+
+        // Success - return result
+        console.log(`✅ Poll ${attempts}: Job completed`)
+        return { success: true, status: 200, result: data?.result || data }
+      }
+
+      if (response.status === 202) {
+        // Still processing, continue polling
+        const progress = data?.progress || 'unknown'
+        console.log(`⏳ Poll ${attempts}: Processing (${progress}% complete)...`)
+        await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+        continue
+      }
+
+      // Non-2xx status = error
+      console.log(`❌ Poll ${attempts}: Status ${response.status}`)
+      return { success: false, status: response.status, error: `Status check returned ${response.status}` }
+
+    } catch (error: any) {
+      console.error(`⚠️ Poll ${attempts} error:`, error.message)
+      // On network error, wait and retry
+      await new Promise(resolve => setTimeout(resolve, PROXY_POLLING_CONFIG.pollIntervalMs))
+    }
+  }
+
+  // Timeout
+  console.log(`❌ Polling timed out after ${attempts} attempts`)
+  return { success: false, status: 504, error: `Async operation timed out after ${maxDurationMs / 1000} seconds` }
+}
+
+/**
+ * Verify EIP-3009 payment authorization signature
+ * This validates the signature WITHOUT executing the transfer
+ */
+async function verifyPaymentAuthorization(paymentData: string, expectedPayTo: string, expectedAmount: string, paymentToken: string): Promise<{ valid: boolean; userAddress?: string; error?: string }> {
+  try {
+    // Decode payment data
+    const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+    const paymentProof = JSON.parse(decoded)
+    
+    const authorization = paymentProof?.payload?.authorization
+    const signature = paymentProof?.payload?.signature
+    
+    if (!authorization || !signature) {
+      return { valid: false, error: 'Missing authorization or signature' }
+    }
+    
+    // Verify recipient matches
+    if (authorization.to.toLowerCase() !== expectedPayTo.toLowerCase()) {
+      return { valid: false, error: `Payment recipient mismatch: expected ${expectedPayTo}, got ${authorization.to}` }
+    }
+    
+    // Verify amount matches
+    if (authorization.value !== expectedAmount) {
+      return { valid: false, error: `Payment amount mismatch: expected ${expectedAmount}, got ${authorization.value}` }
+    }
+    
+    // Verify timing validity (validAfter <= now <= validBefore)
+    const now = Math.floor(Date.now() / 1000)
+    const validAfter = parseInt(authorization.validAfter)
+    const validBefore = parseInt(authorization.validBefore)
+    
+    if (now < validAfter) {
+      return { valid: false, error: 'Payment authorization not yet valid' }
+    }
+    
+    if (now > validBefore) {
+      return { valid: false, error: 'Payment authorization expired' }
+    }
+    
+    // TODO: Optionally verify EIP-712 signature on-chain or off-chain
+    // For now, we trust the signature since thirdweb will execute it
+    
+    return { 
+      valid: true, 
+      userAddress: authorization.from.toLowerCase() 
+    }
+  } catch (error: any) {
+    return { valid: false, error: error.message || 'Failed to verify payment authorization' }
+  }
+}
+
+/**
+ * Execute EIP-3009 payment transfer using x402 Facilitator (@x402/core)
+ * This should only be called AFTER builder successfully returns data
+ */
+async function executePaymentTransfer(
+  paymentData: string,
+  paymentToken: string,
+  req: any,
+  tokenAddress: string,
+  fee: string, // API-specific fee in USDC micro-units (6 decimals)
+  serverSlug: string,
+  apiSlug: string,
+  apiName: string
+): Promise<{ success: boolean; txHash?: string; error?: string; paymentReceipt?: any }> {
+  try {
+    if (!openFacilitator) {
+      return { success: false, error: 'x402 Facilitator not initialized' }
+    }
+
+    // Decode payment payload from base64 (sent in PAYMENT-SIGNATURE header)
+    let decodedPayment: any
+    try {
+      decodedPayment = JSON.parse(Buffer.from(paymentData, 'base64').toString('utf-8'))
+      console.log('📦 Decoded payment payload structure:', JSON.stringify({
+        x402Version: decodedPayment?.x402Version,
+        scheme: decodedPayment?.scheme,
+        network: decodedPayment?.network,
+        hasAccepted: !!decodedPayment?.accepted,
+        accepted: decodedPayment?.accepted,
+        hasPayload: !!decodedPayment?.payload,
+        payloadKeys: decodedPayment?.payload ? Object.keys(decodedPayment.payload) : [],
+        authTo: decodedPayment?.payload?.authorization?.to,
+        authValue: decodedPayment?.payload?.authorization?.value,
+      }, null, 2))
+    } catch (parseError: any) {
+      return { success: false, error: `Failed to decode payment data: ${parseError.message}` }
+    }
+
+    // Normalize payment to proper V2 format if needed.
+    // Thirdweb SDK quirk: when it receives a V2 402 response it sets x402Version=2
+    // but keeps scheme/network at the top level (V1 structure) without building `accepted`.
+    // x402.org/facilitator expects proper V2 with `accepted: { scheme, network, ... }`.
+    let paymentForFacilitator = decodedPayment
+    if (decodedPayment?.x402Version === 2 && !decodedPayment?.accepted && decodedPayment?.scheme) {
+      console.log('🔧 Normalizing malformed V2 payment → proper V2 format')
+      paymentForFacilitator = {
+        x402Version: 2,
+        accepted: {
+          scheme: decodedPayment.scheme,
+          network: decodedPayment.network,   // "eip155:84532" (CAIP-2)
+          asset: paymentToken,
+          amount: fee,
+          payTo: tokenAddress,
+          maxTimeoutSeconds: 300,
+        },
+        payload: decodedPayment.payload,
+      }
+    }
+
+    // Fetch EIP-712 domain from the payment token contract (needed by x402.org/facilitator)
+    const tokenDomain = await evmContractService.getPaymentTokenDomain(paymentToken)
+
+    // Build requirements matching @x402/core PaymentRequirements type
+    const network = `eip155:${baseSepolia.id}` as `${string}:${string}` // CAIP-2
+    const requirements = {
+      scheme: 'exact',
+      network,
+      amount: fee,
+      asset: paymentToken,
+      payTo: tokenAddress,
+      maxTimeoutSeconds: 300,
+      extra: {
+        name: tokenDomain.name,    // EIP-712 domain name (e.g. "USD Coin")
+        version: tokenDomain.version, // EIP-712 domain version (e.g. "2")
+      } as Record<string, unknown>,
+    }
+
+    console.log('🔍 Verifying payment with x402 Facilitator:', {
+      facilitatorUrl: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+      api: `${serverSlug}/${apiSlug}`,
+      payTo: tokenAddress,
+      amount: fee,
+      asset: paymentToken,
+      network: requirements.network,
+      eip712Domain: requirements.extra,
+      timestamp: new Date().toISOString()
+    })
+
+    const verifyResult = await openFacilitator.verify(paymentForFacilitator, requirements)
+
+    if (!verifyResult.isValid) {
+      const reason = verifyResult.invalidReason || 'Payment verification failed'
+      console.error(`❌ x402 verify failed: ${reason}`, verifyResult.invalidMessage || '')
+      return { success: false, error: reason }
+    }
+
+    console.log('💳 Settling payment with x402 Facilitator:', {
+      api: `${serverSlug}/${apiSlug} - ${apiName}`,
+      payer: verifyResult.payer,
+      payTo: tokenAddress,
+      amount: fee,
+      timestamp: new Date().toISOString()
+    })
+
+    const settleResult = await openFacilitator.settle(paymentForFacilitator, requirements)
+
+    console.log(`📊 x402 settle result:`, {
+      success: settleResult.success,
+      transaction: settleResult.transaction,
+      payer: settleResult.payer,
+      network: settleResult.network,
+      errorReason: settleResult.errorReason,
+      timestamp: new Date().toISOString()
+    })
+
+    if (!settleResult.success) {
+      const reason = settleResult.errorReason || 'Payment settlement failed'
+      console.error(`❌ x402 settle failed: ${reason}`)
+      return { success: false, error: reason }
+    }
+
+    console.log(`✅ Payment settled successfully! tx=${settleResult.transaction}`)
+    return {
+      success: true,
+      txHash: settleResult.transaction,
+      paymentReceipt: settleResult,
+    }
+
+  } catch (error: any) {
+    console.error("Error in executePaymentTransfer:", error)
+    return { success: false, error: error.message || 'Failed to execute payment transfer' }
+  }
+}
+
+/**
+ * POST /api/upload-logo - Upload a server logo to Cloudinary
+ *
+ * Request body:
+ * {
+ *   image: string (base64-encoded image data with data URI prefix)
+ * }
+ *
+ * Returns:
+ * {
+ *   success: boolean,
+ *   logoUrl?: string,
+ *   error?: string
+ * }
+ */
+app.post('/api/upload-logo', async (req, res) => {
+  try {
+    // Check if Cloudinary is configured
+    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+      return res.status(503).json({
+        success: false,
+        error: 'Logo upload service not configured'
+      })
+    }
+
+    const { image } = req.body
+
+    if (!image) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing image data'
+      })
+    }
+
+    // Validate base64 image format (should start with data:image/)
+    if (!image.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image format. Must be a base64-encoded image with data URI prefix.'
+      })
+    }
+
+    // Validate image type
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml']
+    const mimeTypeMatch = image.match(/^data:(image\/[^;]+);base64,/)
+    if (!mimeTypeMatch || !validTypes.includes(mimeTypeMatch[1])) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid image type. Allowed types: png, jpg, jpeg, webp, svg`
+      })
+    }
+
+    // Calculate approximate file size from base64 (base64 is ~33% larger than binary)
+    const base64Data = image.split(',')[1]
+    const fileSizeBytes = Math.ceil((base64Data.length * 3) / 4)
+    const maxSizeBytes = 500 * 1024 // 500KB
+
+    if (fileSizeBytes > maxSizeBytes) {
+      return res.status(400).json({
+        success: false,
+        error: `Image too large. Maximum size is 500KB, received ${Math.round(fileSizeBytes / 1024)}KB`
+      })
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(image, {
+      folder: 'apix-logos',
+      resource_type: 'image',
+      transformation: [
+        { width: 200, height: 200, crop: 'fill', gravity: 'center' },
+        { quality: 'auto', fetch_format: 'auto' }
+      ]
+    })
+
+    console.log(`✅ Logo uploaded to Cloudinary: ${uploadResult.secure_url}`)
+
+    return res.status(200).json({
+      success: true,
+      logoUrl: uploadResult.secure_url
+    })
+
+  } catch (error: any) {
+    console.error('Error uploading logo:', error)
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to upload logo'
+    })
+  }
+})
+
+/**
+ * POST /api/test-endpoint - Test an API endpoint before registration
+ *
+ * Allows builders to test their API endpoints with custom request body
+ * before submitting for registration. This replaces automatic validation.
+ *
+ * Request body:
+ * {
+ *   url: string (API endpoint URL),
+ *   method: "GET" | "POST" (HTTP method),
+ *   body?: object (optional request body for POST requests),
+ *   queryParams?: string (optional query string for GET requests)
+ * }
+ *
+ * Response:
+ * {
+ *   success: boolean,
+ *   statusCode: number,
+ *   statusText: string,
+ *   responseTime: number (ms),
+ *   headers: object,
+ *   data: any (response body, truncated if too large)
+ * }
+ */
+app.post('/api/test-endpoint', async (req, res) => {
+  const { url, method = 'GET', body, queryParams } = req.body
+
+  // Validate required fields
+  if (!url) {
+    return res.status(400).json({
+      error: "Missing URL",
+      message: "Please provide the API endpoint URL to test"
+    })
+  }
+
+  // Validate URL format
+  let testUrl: URL
+  try {
+    testUrl = new URL(url)
+    // Append query params if provided
+    if (queryParams && method === 'GET') {
+      const separator = testUrl.search ? '&' : '?'
+      testUrl = new URL(url + separator + queryParams)
+    }
+  } catch {
+    return res.status(400).json({
+      error: "Invalid URL",
+      message: "Please provide a valid URL"
+    })
+  }
+
+  // Validate method
+  const validMethod = (method || 'GET').toUpperCase()
+  if (validMethod !== 'GET' && validMethod !== 'POST') {
+    return res.status(400).json({
+      error: "Invalid method",
+      message: "Method must be GET or POST"
+    })
+  }
+
+  try {
+    const startTime = Date.now()
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
+    // Build fetch options - using any to avoid node-fetch type conflicts
+    const fetchOptions: any = {
+      method: validMethod,
+      headers: {
+        'User-Agent': 'IAO-Proxy/1.0 (API Test)',
+        'Accept': 'application/json, */*',
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    }
+
+    // Add body for POST requests
+    if (validMethod === 'POST' && body) {
+      fetchOptions.body = JSON.stringify(body)
+    }
+
+    const response = await fetch(testUrl.toString(), fetchOptions)
+    clearTimeout(timeoutId)
+
+    const responseTime = Date.now() - startTime
+
+    // Get response headers
+    const headers: Record<string, string> = {}
+    response.headers.forEach((value, key) => {
+      headers[key] = value
+    })
+
+    // Try to parse response body
+    let responseData: any = null
+    const contentType = response.headers.get('content-type') || ''
+
+    try {
+      const textBody = await response.text()
+      // Truncate if too large (max 10KB for display)
+      const truncatedBody = textBody.length > 10240
+        ? textBody.substring(0, 10240) + '... [truncated]'
+        : textBody
+
+      if (contentType.includes('application/json')) {
+        try {
+          responseData = JSON.parse(truncatedBody)
+        } catch {
+          responseData = truncatedBody
+        }
+      } else {
+        responseData = truncatedBody
+      }
+    } catch {
+      responseData = '[Unable to read response body]'
+    }
+
+    return res.status(200).json({
+      success: response.ok,
+      statusCode: response.status,
+      statusText: response.statusText,
+      responseTime,
+      headers,
+      data: responseData,
+      testedUrl: testUrl.toString(),
+      method: validMethod,
+    })
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return res.status(200).json({
+        success: false,
+        error: "Timeout",
+        message: "The API endpoint did not respond within 30 seconds",
+        testedUrl: testUrl.toString(),
+        method: validMethod,
+      })
+    }
+
+    return res.status(200).json({
+      success: false,
+      error: "Connection failed",
+      message: error.message || "Failed to connect to the API endpoint",
+      testedUrl: testUrl.toString(),
+      method: validMethod,
+    })
+  }
+})
+
+/**
+ * POST /api/register - Register a new IAO token with one or more API endpoints
+ *
+ * This endpoint can be called in two modes:
+ * 1. VALIDATION MODE (tokenAddress missing): Validates data BEFORE transaction signing
+ * 2. REGISTRATION MODE (tokenAddress present): Stores token in Firestore AFTER transaction
+ *
+ * Request body (validation mode):
+ * {
+ *   slug: string (server slug, e.g., "magpie"),
+ *   apis: [{ slug: string, apiUrl: string, fee: string }],
+ *   builder: string (0x...),
+ * }
+ * 
+ * Request body (registration mode):
+ * {
+ *   tokenAddress: string (0x...),
+ *   slug: string (server slug, e.g., "magpie"),
+ *   name: string,
+ *   symbol: string,
+ *   apis: [{ slug: string, name: string, apiUrl: string, description: string, fee: string }],
+ *   builder: string (0x...),
+ *   paymentToken: string (0x...),
+ * }
+ */
+app.post('/api/register', async (req, res) => {
+  try {
+    const {
+      tokenAddress,  // Optional - if missing, just validate
+      serverSlug,     // Server slug (e.g., "magpie") - comes as "serverSlug" from frontend
+      slug = serverSlug, // Backwards compatibility: accept both "slug" and "serverSlug"
+      name,
+      symbol,
+      apis,       // Array of APIs with individual fees
+      builder,
+      paymentToken,
+      tags,       // Array of category tags (optional)
+      logoUrl,    // Cloudinary URL for server logo (optional)
+      chainId: rawChainId,  // Chain ID: "84532" (Base Sepolia) or "devnet" (Solana)
+    } = req.body
+
+    // Default chainId to "84532" if null or undefined (frontend sends null when "All Chains" selected)
+    const chainId = rawChainId || "84532"
+
+    // Determine chain type from chainId
+    const chainType = getChainTypeFromId(chainId)
+
+    // VALIDATION MODE: If tokenAddress is missing, just validate and return
+    if (!tokenAddress) {
+      // Validate required fields for validation mode
+      if (!slug || !apis || !builder) {
+        return res.status(400).json({
+          error: "Missing required fields",
+          message: "slug (or serverSlug), apis, and builder are required for validation"
+        })
+      }
+
+      // Validate server slug format
+      const finalServerSlug = slug.toLowerCase()
+      if (!isValidSlug(finalServerSlug)) {
+        return res.status(400).json({
+          error: "Invalid server slug",
+          message: "Server slug must be 3-30 characters, lowercase alphanumeric with hyphens"
+        })
+      }
+
+      // Validate at least one API is provided
+      if (!Array.isArray(apis) || apis.length === 0) {
+        return res.status(400).json({
+          error: "Missing API endpoints",
+          message: "'apis' array with at least one API is required"
+        })
+      }
+
+      // Validate address format based on chain type
+      if (!isValidAddressForChain(builder, chainType)) {
+        return res.status(400).json({
+          error: "Invalid address format",
+          message: chainType === "solana"
+            ? "builder must be a valid Solana address (base58)"
+            : "builder must be a valid Ethereum address (0x...)"
+        })
+      }
+
+      // Check if Firestore is configured
+      if (!tokenService) {
+        return res.status(503).json({
+          error: "Firestore not configured",
+          message: "Firestore service is not available"
+        })
+      }
+
+      // Check if server slug already exists
+      const existingBySlug = await tokenService.getItemBySlug(finalServerSlug)
+      if (existingBySlug) {
+        return res.status(409).json({
+          error: "Server slug already taken",
+          message: `The slug "${finalServerSlug}" is already registered. Please choose a different slug.`
+        })
+      }
+
+
+      // Validate API fields and check for duplicates
+      const apiUrlsWithMethods: { url: string; method: 'GET' | 'POST' }[] = []
+      const apiSlugs = new Set<string>()
+
+      for (let i = 0; i < apis.length; i++) {
+        const api = apis[i]
+        
+        // Validate required API fields
+        if (!api.slug || !api.apiUrl || !api.fee) {
+          return res.status(400).json({
+            error: "Invalid API entry",
+            message: `API at index ${i} is missing required fields (slug, apiUrl, fee)`
+          })
+        }
+
+        // Validate fee is a positive number
+        try {
+          const fee = BigInt(api.fee)
+          if (fee <= 0n) {
+            return res.status(400).json({
+              error: "Invalid API fee",
+              message: `API at index ${i} must have a positive fee`
+            })
+          }
+        } catch {
+          return res.status(400).json({
+            error: "Invalid fee format",
+            message: `API at index ${i} has invalid fee format`
+          })
+        }
+
+        // Validate API slug format
+        const apiSlug = api.slug.toLowerCase()
+        if (!isValidSlug(apiSlug)) {
+          return res.status(400).json({
+            error: "Invalid API slug",
+            message: `API at index ${i} has invalid slug. Must be 3-30 characters, lowercase alphanumeric with hyphens.`
+          })
+        }
+
+        // Check for duplicate API slugs within this registration
+        if (apiSlugs.has(apiSlug)) {
+          return res.status(400).json({
+            error: "Duplicate API slug",
+            message: `API slug "${apiSlug}" is used more than once. Each API must have a unique slug.`
+          })
+        }
+        apiSlugs.add(apiSlug)
+
+        // Validate URL format only (no endpoint reachability check)
+        // Builders can use /api/test-endpoint to manually test their APIs before registering
+        try {
+          new URL(api.apiUrl)
+          apiUrlsWithMethods.push({ url: api.apiUrl, method: api.method || 'GET' })
+        } catch {
+          return res.status(400).json({
+            error: "Invalid API URL",
+            message: `API at index ${i} has invalid URL: ${api.apiUrl}`
+          })
+        }
+      }
+
+      // Check if any API URL + method combinations are already registered globally
+      // Same URL with different methods (GET vs POST) is allowed
+      const duplicateApis = await tokenService.checkApiUrlsDuplicate(apiUrlsWithMethods)
+      if (duplicateApis.length > 0) {
+        return res.status(409).json({
+          error: "Duplicate API URL(s)",
+          message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
+          duplicates: duplicateApis.map(d => ({
+            url: d.url,
+            method: d.method,
+            registeredOn: d.serverSlug
+          }))
+        })
+      }
+
+      // Validate tags if provided
+      if (tags !== undefined) {
+        const validatedTags = validateTags(tags)
+        if (validatedTags === null) {
+          return res.status(400).json({
+            error: "Invalid tags",
+            message: `Tags must be an array of valid category strings. Valid categories: ${VALID_CATEGORY_TAGS.join(', ')}`
+          })
+        }
+      }
+
+      // All validation checks passed
+      return res.status(200).json({
+        success: true,
+        message: "All validation checks passed. You can proceed with token creation.",
+        serverSlug: finalServerSlug,
+        apiCount: apis.length
+      })
+    }
+
+    // REGISTRATION MODE: tokenAddress is present, proceed with full registration
+    // Validate required fields for registration mode
+    if (!slug || !name || !symbol || !builder || !paymentToken) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        message: "slug (or serverSlug), name, symbol, builder, and paymentToken are required"
+      })
+    }
+
+    // Validate tags if provided
+    let validatedTags: string[] = []
+    if (tags !== undefined) {
+      const tagsResult = validateTags(tags)
+      if (tagsResult === null) {
+        return res.status(400).json({
+          error: "Invalid tags",
+          message: `Tags must be an array of valid category strings. Valid categories: ${VALID_CATEGORY_TAGS.join(', ')}`
+        })
+      }
+      validatedTags = tagsResult
+    }
+
+    // Validate server slug format
+    const finalServerSlug = slug.toLowerCase()
+    if (!isValidSlug(finalServerSlug)) {
+      return res.status(400).json({
+        error: "Invalid server slug",
+        message: "Server slug must be 3-30 characters, lowercase alphanumeric with hyphens, starting and ending with alphanumeric"
+      })
+    }
+
+    // Validate at least one API is provided
+    if (!apis || !Array.isArray(apis) || apis.length === 0) {
+      return res.status(400).json({
+        error: "Missing API endpoints",
+        message: "'apis' array with at least one API is required"
+      })
+    }
+
+    // Validate address format based on chain type
+    if (!isValidAddressForChain(tokenAddress, chainType) ||
+        !isValidAddressForChain(builder, chainType) ||
+        (paymentToken && !isValidAddressForChain(paymentToken, chainType))) {
+      return res.status(400).json({
+        error: "Invalid address format",
+        message: chainType === "solana"
+          ? "tokenAddress, builder, and paymentToken must be valid Solana addresses (base58)"
+          : "tokenAddress, builder, and paymentToken must be valid Ethereum addresses (0x...)"
+      })
+    }
+
+    // Check if Firestore is configured
+    if (!tokenService) {
+      return res.status(503).json({
+        error: "Firestore not configured",
+        message: "Firestore service is not available. Please configure GCP_PROJECT_ID"
+      })
+    }
+
+    // Check if server slug already exists
+    const existingBySlug = await tokenService.getItemBySlug(finalServerSlug)
+    if (existingBySlug) {
+      return res.status(409).json({
+        error: "Server slug already taken",
+        message: `The slug "${finalServerSlug}" is already registered. Please choose a different slug.`
+      })
+    }
+
+
+    // Check if token address already exists
+    const existingToken = await tokenService.getItem(tokenAddress)
+    if (existingToken) {
+      return res.status(409).json({
+        error: "Token already registered",
+        message: `Token ${tokenAddress} is already registered.`,
+        token: {
+          slug: existingToken.slug,
+          name: existingToken.name,
+        }
+      })
+    }
+
+    // Check if any API URL + method combinations are already registered globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const apiUrlsWithMethods = apis
+      .filter((api: any) => api.apiUrl)
+      .map((api: any) => ({ url: api.apiUrl, method: (api.method || 'GET') as 'GET' | 'POST' }))
+    const duplicateApis = await tokenService.checkApiUrlsDuplicate(apiUrlsWithMethods)
+    if (duplicateApis.length > 0) {
+      return res.status(409).json({
+        error: "Duplicate API URL(s)",
+        message: `The following API endpoint(s) are already registered with the same method: ${duplicateApis.map(d => `${d.url} (${d.method})`).join(', ')}`,
+        duplicates: duplicateApis.map(d => ({
+          url: d.url,
+          method: d.method,
+          registeredOn: d.serverSlug
+        }))
+      })
+    }
+
+    // Build apis array with validation
+    const apiEntries: ApiEntry[] = []
+    const apiSlugs = new Set<string>()
+    const now = new Date().toISOString()
+
+    for (let i = 0; i < apis.length; i++) {
+      const api = apis[i]
+      
+      // Validate required API fields
+      if (!api.slug || !api.name || !api.apiUrl || !api.description || !api.fee) {
+        return res.status(400).json({
+          error: "Invalid API entry",
+          message: `API at index ${i} is missing required fields (slug, name, apiUrl, description, fee)`
+        })
+      }
+
+      // Validate fee is a positive number
+      const fee = BigInt(api.fee)
+      if (fee <= 0n) {
+        return res.status(400).json({
+          error: "Invalid API fee",
+          message: `API at index ${i} must have a positive fee`
+        })
+      }
+
+      // Validate API slug format
+      const apiSlug = api.slug.toLowerCase()
+      if (!isValidSlug(apiSlug)) {
+        return res.status(400).json({
+          error: "Invalid API slug",
+          message: `API at index ${i} has invalid slug. Must be 3-30 characters, lowercase alphanumeric with hyphens.`
+        })
+      }
+
+      // Check for duplicate API slugs within this registration
+      if (apiSlugs.has(apiSlug)) {
+        return res.status(400).json({
+          error: "Duplicate API slug",
+          message: `API slug "${apiSlug}" is used more than once. Each API must have a unique slug.`
+        })
+      }
+      apiSlugs.add(apiSlug)
+
+      // Validate URL format
+      try {
+        new URL(api.apiUrl)
+      } catch {
+        return res.status(400).json({
+          error: "Invalid API URL",
+          message: `API at index ${i} has invalid URL: ${api.apiUrl}`
+        })
+      }
+
+      // NOTE: Automatic API validation removed - builders should test their endpoints
+      // using the /api/test-endpoint route before submitting registration
+
+      // Validate parameters array if provided
+      if (api.parameters && Array.isArray(api.parameters)) {
+        for (let j = 0; j < api.parameters.length; j++) {
+          const param = api.parameters[j]
+          if (!param.name || !param.type || typeof param.required !== 'boolean') {
+            return res.status(400).json({
+              error: "Invalid parameter",
+              message: `API "${apiSlug}": Parameter at index ${j} must have name, type, and required fields`
+            })
+          }
+          // Validate type is one of the allowed values
+          const validTypes = ['string', 'number', 'boolean', 'object', 'array']
+          if (!validTypes.includes(param.type)) {
+            return res.status(400).json({
+              error: "Invalid parameter type",
+              message: `API "${apiSlug}": Parameter "${param.name}" has invalid type "${param.type}". Must be one of: ${validTypes.join(', ')}`
+            })
+          }
+        }
+      }
+
+      apiEntries.push({
+        index: i,
+        slug: apiSlug,
+        name: api.name,
+        apiUrl: api.apiUrl,
+        description: api.description,
+        fee: api.fee,
+        method: api.method || 'GET',  // Default to GET if not specified
+        parameters: api.parameters || [],
+        responseFormat: api.responseFormat?.trim() || '',
+        createdAt: now,
+      })
+    }
+
+    // Create token entry
+    const tokenEntry: IAOTokenDBEntry = {
+      id: normalizeAddress(tokenAddress),
+      slug: finalServerSlug,
+      name,
+      symbol,
+      apis: apiEntries,
+      builder: normalizeAddress(builder),
+      paymentToken: paymentToken ? normalizeAddress(paymentToken) : "",
+      chainId,
+      subscriptionCount: "0",
+      refundCount: "0",
+      fulfilledCount: "0",
+      tags: validatedTags.length > 0 ? validatedTags : undefined,
+      logoUrl: logoUrl || undefined,
+      distributionModel: 'merkle',  // Use Merkle claim distribution for all new tokens
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    // Store in Firestore
+    await tokenService.putItem(tokenEntry)
+
+    // Invalidate any stale cache for this slug
+    await invalidateCache(CacheKeys.SERVER_BY_SLUG(finalServerSlug))
+
+    console.log(`✅ Registered new server: ${finalServerSlug} (${name}/${symbol}) with ${apiEntries.length} API(s)`)
+
+    return res.status(201).json({
+      success: true,
+      message: `Server registered successfully with ${apiEntries.length} API(s)`,
+      token: {
+        id: tokenEntry.id,
+        slug: tokenEntry.slug,
+        name: tokenEntry.name,
+        symbol: tokenEntry.symbol,
+        apis: sanitizeApisForPublic(apiEntries), // Hide apiUrl from response
+        builder: tokenEntry.builder,
+        paymentToken: tokenEntry.paymentToken,
+        logoUrl: tokenEntry.logoUrl,
+      }
+    })
+  } catch (error: any) {
+    console.error("Error registering token:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to register token"
+    })
+  }
+})
+
+/**
+ * POST /api/add-api - Add a new API to an existing server
+ * 
+ * This endpoint allows builders to add more APIs to their existing server.
+ * The new API will be assigned the next available index.
+ * 
+ * Request body:
+ * {
+ *   serverSlug: string (e.g., "magpie"),
+ *   slug: string (API slug, e.g., "pool-snapshot"),
+ *   name: string,
+ *   apiUrl: string,
+ *   description: string,
+ *   builder: string (0x...) // For verification
+ * }
+ */
+app.post('/api/add-api', async (req, res) => {
+  try {
+    const {
+      serverSlug,
+      slug,
+      name,
+      apiUrl,
+      description,
+      fee,
+      method = 'GET',  // Default to GET if not specified
+      parameters = [],  // Request parameters documentation
+      responseFormat = '',  // Expected response format
+      builder,
+    } = req.body
+
+    // Validate required fields
+    if (!serverSlug || !slug || !name || !apiUrl || !description || !fee || !builder) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        message: "serverSlug, slug, name, apiUrl, description, fee, and builder are required"
+      })
+    }
+
+    // Validate method
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
+      })
+    }
+
+    // Validate fee is a positive number
+    try {
+      const feeAmount = BigInt(fee)
+      if (feeAmount <= 0n) {
+        return res.status(400).json({
+          error: "Invalid fee",
+          message: "Fee must be a positive number"
+        })
+      }
+    } catch {
+      return res.status(400).json({
+        error: "Invalid fee format",
+        message: "Fee must be a valid number string"
+      })
+    }
+
+    // Validate API slug format
+    const apiSlug = slug.toLowerCase()
+    if (!isValidSlug(apiSlug)) {
+      return res.status(400).json({
+        error: "Invalid API slug",
+        message: "API slug must be 3-30 characters, lowercase alphanumeric with hyphens"
+      })
+    }
+
+    // Validate address format (accept both EVM and Solana addresses)
+    if (!isValidEvmAddress(builder) && !isValidSolanaAddress(builder)) {
+      return res.status(400).json({
+        error: "Invalid address format",
+        message: "builder must be a valid address (Ethereum 0x... or Solana base58)"
+      })
+    }
+
+    // Validate URL format
+    try {
+      new URL(apiUrl)
+    } catch {
+      return res.status(400).json({
+        error: "Invalid API URL",
+        message: "apiUrl must be a valid URL"
+      })
+    }
+
+    // Validate API endpoint returns 200 status code
+    // Use the API's specified method (GET or POST) for validation
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
+      const response = await fetch(apiUrl, {
+        method: method,
+        headers: {
+          'User-Agent': 'IAO-Proxy/1.0',
+          'Accept': 'application/json, */*',
+          'Content-Type': 'application/json',
+        },
+        body: method === 'POST' ? JSON.stringify({}) : undefined,
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      // For POST endpoints, also accept 400 (Bad Request) since validation sends empty body
+      // which may not be valid for APIs that require specific parameters
+      const acceptableStatuses = method === 'POST'
+        ? [200, 202, 400, 422]
+        : [200, 202]
+
+      if (!acceptableStatuses.includes(response.status)) {
+        return res.status(400).json({
+          error: "API endpoint validation failed",
+          message: `API endpoint (${apiUrl}) returned status code ${response.status}. Please ensure your API endpoint is accessible.`
+        })
+      }
+    } catch (fetchError: any) {
+      if (fetchError.name === 'AbortError') {
+        return res.status(400).json({
+          error: "API endpoint timeout",
+          message: `API endpoint (${apiUrl}) did not respond within 30 seconds. Please ensure your API endpoint is accessible.`
+        })
+      }
+      
+      return res.status(400).json({
+        error: "API endpoint validation failed",
+        message: `API endpoint (${apiUrl}) is not accessible: ${fetchError.message || 'Connection failed'}. Please ensure your API endpoint is publicly accessible and returns a 200 status code.`
+      })
+    }
+
+    // Check if Firestore is configured
+    if (!tokenService) {
+      return res.status(503).json({
+        error: "Firestore not configured",
+        message: "Firestore service is not available"
+      })
+    }
+
+    // Get existing token by slug
+    const existingToken = await tokenService.getItemBySlug(serverSlug.toLowerCase())
+    if (!existingToken) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `Server "${serverSlug}" is not registered. Use /api/register first.`
+      })
+    }
+
+    // Verify builder ownership
+    if (normalizeAddress(existingToken.builder) !== normalizeAddress(builder)) {
+      return res.status(403).json({
+        error: "Unauthorized",
+        message: "Only the server owner can add APIs"
+      })
+    }
+
+    // Check if API slug already exists in this server
+    if (existingToken.apis?.some(api => api.slug === apiSlug)) {
+      return res.status(409).json({
+        error: "API slug already exists",
+        message: `API slug "${apiSlug}" already exists in server "${serverSlug}". Choose a different slug.`
+      })
+    }
+
+    // Check if API URL + method combination already exists globally
+    // Same URL with different methods (GET vs POST) is allowed
+    const existingApiUrl = await tokenService.apiUrlExists(apiUrl, method as 'GET' | 'POST')
+    if (existingApiUrl.exists) {
+      return res.status(409).json({
+        error: "Duplicate API URL",
+        message: `This API endpoint with ${method} method is already registered on server "${existingApiUrl.serverSlug}".`
+      })
+    }
+
+    // Add new API
+    const newApi = await tokenService.addApiToToken(
+      existingToken.id,
+      apiSlug,
+      name,
+      apiUrl,
+      description,
+      fee,
+      method as 'GET' | 'POST',
+      parameters,
+      responseFormat
+    )
+
+    if (!newApi) {
+      return res.status(500).json({
+        error: "Failed to add API",
+        message: "An error occurred while adding the API"
+      })
+    }
+
+    // Invalidate cache so subsequent requests get the updated server with new API
+    await invalidateCache(CacheKeys.SERVER_BY_SLUG(serverSlug.toLowerCase()))
+
+    console.log(`✅ Added API to server ${serverSlug}: ${name} (slug: ${apiSlug})`)
+
+    return res.status(201).json({
+      success: true,
+      message: "API added successfully",
+      api: sanitizeApiForPublic(newApi), // Hide apiUrl from response
+      serverSlug: serverSlug.toLowerCase(),
+    })
+  } catch (error: any) {
+    console.error("Error adding API:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to add API"
+    })
+  }
+})
+
+/**
+ * PATCH /api/update-api - Update an existing API's properties (e.g., method)
+ *
+ * Request body:
+ * {
+ *   serverSlug: string,
+ *   apiSlug: string,
+ *   method: 'GET' | 'POST',
+ *   builder: string (for verification)
+ * }
+ */
+app.patch('/api/update-api', async (req, res) => {
+  try {
+    const { serverSlug, apiSlug, method, builder } = req.body
+
+    if (!serverSlug || !apiSlug || !method || !builder) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        message: "serverSlug, apiSlug, method, and builder are required"
+      })
+    }
+
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({
+        error: "Invalid method",
+        message: "method must be 'GET' or 'POST'"
+      })
+    }
+
+    // Get server
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug.toLowerCase())
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Verify builder ownership
+    if (normalizeAddress(tokenEntry.builder) !== normalizeAddress(builder)) {
+      return res.status(403).json({
+        error: "Unauthorized",
+        message: "Only the server builder can update APIs"
+      })
+    }
+
+    // Find and update the API
+    const apis = tokenEntry.apis || []
+    const apiIndex = apis.findIndex(a => a.slug.toLowerCase() === apiSlug.toLowerCase())
+
+    if (apiIndex === -1) {
+      return res.status(404).json({
+        error: "API not found",
+        message: `No API with slug "${apiSlug}" found in server "${serverSlug}"`
+      })
+    }
+
+    // Update the method
+    apis[apiIndex].method = method
+
+    // Save to Firestore - update the full token entry
+    const updatedEntry = {
+      ...tokenEntry,
+      apis,
+      updatedAt: new Date().toISOString()
+    }
+    await tokenService.putItem(updatedEntry as any)
+
+    console.log(`✅ Updated API ${serverSlug}/${apiSlug} method to ${method}`)
+
+    return res.json({
+      success: true,
+      message: `API method updated to ${method}`,
+      api: {
+        slug: apis[apiIndex].slug,
+        name: apis[apiIndex].name,
+        method: apis[apiIndex].method,
+        fee: apis[apiIndex].fee
+      }
+    })
+  } catch (error: any) {
+    console.error("Error updating API:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to update API"
+    })
+  }
+})
+
+/**
+ * GET /api/server/:slug - Get server metadata by slug (no payment required)
+ *
+ * Returns server/token information from Firestore without processing payment.
+ * Includes all registered APIs under this server (apiUrl hidden for security).
+ *
+ * @param slug - Server slug (e.g., "magpie")
+ */
+app.get('/api/server/:slug', async (req, res) => {
+  const serverSlug = req.params.slug.toLowerCase()
+
+  try {
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    return res.status(200).json({
+      success: true,
+      server: {
+        id: tokenEntry.id,
+        slug: tokenEntry.slug,
+        name: tokenEntry.name,
+        symbol: tokenEntry.symbol,
+        builder: tokenEntry.builder,
+        paymentToken: tokenEntry.paymentToken,
+        subscriptionCount: tokenEntry.subscriptionCount || "0",
+        tags: tokenEntry.tags || [],
+        logoUrl: tokenEntry.logoUrl,
+        apis: tokenEntry.apis ? sanitizeApisForPublic(tokenEntry.apis) : [],
+        apiCount: tokenEntry.apis?.length || 0,
+        chainId: tokenEntry.chainId,
+        chainType: tokenEntry.chainId ? getChainTypeFromId(tokenEntry.chainId) : "evm",
+      }
+    })
+  } catch (error: any) {
+    console.error("Error fetching server:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch server"
+    })
+  }
+})
+
+/**
+ * DELETE /api/server/:slug - Delete a server (admin only)
+ * Requires X-Graduation-Secret header for authentication
+ */
+app.delete('/api/server/:slug', async (req, res) => {
+  const serverSlug = req.params.slug.toLowerCase()
+
+  // Auth check - require internal secret
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Delete the token document
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    await db.collection('iao-tokens').doc(normalizeAddress(tokenEntry.id)).delete()
+
+    console.log(`🗑️ Server deleted: ${serverSlug} (${tokenEntry.id})`)
+
+    return res.status(200).json({
+      success: true,
+      message: `Server "${serverSlug}" deleted successfully`,
+      deletedId: tokenEntry.id
+    })
+  } catch (error: any) {
+    console.error("Error deleting server:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to delete server"
+    })
+  }
+})
+
+/**
+ * GET /api/server/:slug/agents - Get agents that use this server's APIs
+ *
+ * Returns public agents that have tools from this server in their availableTools.
+ * Agent tools are stored as "{serverSlug}/{apiSlug}" format.
+ *
+ * @param slug - Server slug (e.g., "magpie")
+ */
+app.get('/api/server/:slug/agents', async (req, res) => {
+  const serverSlug = req.params.slug.toLowerCase()
+
+  try {
+    // Verify server exists
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Check if agent service is available
+    if (!agentService) {
+      return res.status(503).json({
+        error: "Service not available",
+        message: "Agent service is not configured"
+      })
+    }
+
+    // Get all public agents
+    const allPublicAgents = await agentService.listAgents({ isPublic: true })
+
+    // Filter agents that have tools from this server
+    // Tool format is "{serverSlug}/{apiSlug}"
+    const agentsUsingThisServer = allPublicAgents.filter(agent =>
+      agent.availableTools && agent.availableTools.some(tool => tool.startsWith(`${serverSlug}/`))
+    )
+
+    // Get metrics for each agent and prepare response
+    const agentsWithMetrics = await Promise.all(
+      agentsUsingThisServer.map(async (agent) => {
+        const metrics = await agentService!.getAgentMetrics(agent.id)
+
+        // Extract which specific APIs from this server the agent uses
+        const toolsFromThisServer = agent.availableTools.filter(tool => tool.startsWith(`${serverSlug}/`))
+
+        return {
+          id: agent.id,
+          name: agent.name,
+          description: agent.description,
+          creator: agent.creator,
+          llmProvider: agent.llmProvider,
+          toolsFromThisServer,
+          metrics: metrics || {
+            totalMessages: 0,
+            totalUsers: 0,
+            totalToolCalls: 0,
+          },
+          createdAt: agent.createdAt,
+        }
+      })
+    )
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      agentCount: agentsWithMetrics.length,
+      agents: agentsWithMetrics,
+    })
+  } catch (error: any) {
+    console.error("Error fetching agents for server:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch agents"
+    })
+  }
+})
+
+/**
+ * GET /api/chains - Get all available chain configurations
+ * Returns chain configs for frontend chain selection
+ */
+app.get('/api/chains', async (_req, res) => {
+  try {
+    if (!chainConfigService) {
+      // Fallback to default configs if service not initialized
+      return res.json({
+        success: true,
+        chains: DEFAULT_CHAIN_CONFIGS
+      })
+    }
+
+    const chains = await chainConfigService.getAllChains()
+
+    // If no chains in DB, return defaults
+    if (chains.length === 0) {
+      return res.json({
+        success: true,
+        chains: DEFAULT_CHAIN_CONFIGS
+      })
+    }
+
+    return res.json({
+      success: true,
+      chains
+    })
+  } catch (error: any) {
+    console.error("❌ Failed to get chains:", error)
+    // Fallback to defaults on error
+    return res.json({
+      success: true,
+      chains: DEFAULT_CHAIN_CONFIGS
+    })
+  }
+})
+
+/**
+ * GET /api/servers - Get all registered servers with filtering and pagination
+ * Query params:
+ *   - chainId: Filter by chain ID
+ *   - search: Search in name, symbol, slug, tags
+ *   - category: Filter by tag
+ *   - minPrice: Minimum API fee in USDC (e.g., 0.01)
+ *   - maxPrice: Maximum API fee in USDC (e.g., 1.0)
+ *   - sortBy: trending | newest | price-low | price-high
+ *   - limit: Number of servers per page (default 20, max 100)
+ *   - offset: Number of servers to skip (for pagination)
+ */
+app.get('/api/servers', async (req, res) => {
+  try {
+    if (!tokenService) {
+      return res.status(503).json({
+        error: "Firestore not configured",
+        message: "Firestore service is not available"
+      })
+    }
+
+    // Parse query parameters
+    const chainIdFilter = req.query.chainId as string | undefined;
+    const search = (req.query.search as string || '').toLowerCase().trim();
+    const category = req.query.category as string | undefined;
+    const minPrice = req.query.minPrice ? parseFloat(req.query.minPrice as string) : undefined;
+    const maxPrice = req.query.maxPrice ? parseFloat(req.query.maxPrice as string) : undefined;
+    const sortBy = (req.query.sortBy as string || 'trending').toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    let tokens = await tokenService.scanAllItems();
+
+    // Filter by chainId if provided
+    if (chainIdFilter) {
+      tokens = tokens.filter(token => token.chainId === chainIdFilter);
+    }
+
+    // Filter by search query (name, symbol, slug, tags)
+    if (search) {
+      tokens = tokens.filter(token => {
+        const nameMatch = (token.name || '').toLowerCase().includes(search);
+        const symbolMatch = (token.symbol || '').toLowerCase().includes(search);
+        const slugMatch = (token.slug || '').toLowerCase().includes(search);
+        const tagsMatch = (token.tags || []).some(tag => tag.toLowerCase().includes(search));
+        return nameMatch || symbolMatch || slugMatch || tagsMatch;
+      });
+    }
+
+    // Filter by category (tag)
+    if (category && category !== 'all') {
+      tokens = tokens.filter(token =>
+        (token.tags || []).some(tag => tag.toLowerCase() === category.toLowerCase())
+      );
+    }
+
+    // Helper function to get minimum fee from APIs (in USDC)
+    const getMinFeeUsdc = (token: any): number => {
+      if (!token.apis || token.apis.length === 0) return 0;
+      const fees = token.apis.map((api: any) => {
+        const feeRaw = parseFloat(api.fee || '0');
+        return feeRaw / 1e6; // Convert from 6 decimals to USDC
+      });
+      return Math.min(...fees);
+    };
+
+    // Filter by price range
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      tokens = tokens.filter(token => {
+        const minFee = getMinFeeUsdc(token);
+        if (minPrice !== undefined && minFee < minPrice) return false;
+        if (maxPrice !== undefined && minFee > maxPrice) return false;
+        return true;
+      });
+    }
+
+    // Sort tokens
+    switch (sortBy) {
+      case 'trending':
+        tokens.sort((a, b) => {
+          const countA = parseInt(a.subscriptionCount || '0');
+          const countB = parseInt(b.subscriptionCount || '0');
+          return countB - countA;
+        });
+        break;
+      case 'newest':
+        tokens.sort((a, b) => {
+          const dateA = new Date(a.createdAt || 0).getTime();
+          const dateB = new Date(b.createdAt || 0).getTime();
+          return dateB - dateA;
+        });
+        break;
+      case 'price-low':
+        tokens.sort((a, b) => getMinFeeUsdc(a) - getMinFeeUsdc(b));
+        break;
+      case 'price-high':
+        tokens.sort((a, b) => getMinFeeUsdc(b) - getMinFeeUsdc(a));
+        break;
+      default:
+        // Default to trending
+        tokens.sort((a, b) => {
+          const countA = parseInt(a.subscriptionCount || '0');
+          const countB = parseInt(b.subscriptionCount || '0');
+          return countB - countA;
+        });
+    }
+
+    // Get total count before pagination
+    const total = tokens.length;
+
+    // Apply pagination
+    const paginatedTokens = tokens.slice(offset, offset + limit);
+
+    // Sanitize tokens to hide builder endpoints
+    const sanitizedServers = paginatedTokens.map(token => ({
+      id: token.id,
+      slug: token.slug,
+      name: token.name,
+      symbol: token.symbol,
+      builder: token.builder,
+      paymentToken: token.paymentToken,
+      subscriptionCount: token.subscriptionCount,
+      tags: token.tags || [],
+      logoUrl: token.logoUrl,
+      apis: token.apis ? sanitizeApisForPublic(token.apis) : [],
+      apiCount: token.apis?.length || 0,
+      chainId: token.chainId,
+      chainType: token.chainId ? getChainTypeFromId(token.chainId) : "evm",
+      createdAt: token.createdAt,
+      updatedAt: token.updatedAt,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      servers: sanitizedServers,
+      pagination: {
+        total,
+        limit,
+        offset,
+        count: sanitizedServers.length,
+        hasMore: offset + limit < total,
+      },
+    })
+  } catch (error: any) {
+    console.error("Error fetching all servers:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch servers"
+    })
+  }
+})
+
+/**
+ * GET /api/transactions - Get recent transactions across all servers
+ * Returns recent API call transactions sorted by time
+ */
+app.get('/api/transactions', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 20;
+    
+    if (!userRequestService) {
+      return res.status(503).json({
+        error: "Service not available",
+        message: "Transaction service is not configured"
+      });
+    }
+
+    if (!tokenService) {
+      return res.status(503).json({
+        error: "Service not available",
+        message: "Server data service is not configured"
+      });
+    }
+
+    // Get recent transactions
+    const recentTransactions = await userRequestService.getRecentTransactions(limit);
+
+    // Enrich transaction data with server information
+    const enrichedTransactions = await Promise.all(
+      recentTransactions.map(async (tx) => {
+        try {
+          const serverData = await tokenService!.getItem(tx.iaoToken);
+          return {
+            id: tx.id,
+            iaoToken: tx.iaoToken,
+            from: tx.from,
+            globalRequestNumber: tx.globalRequestNumber,
+            fee: tx.fee,
+            createdAt: tx.createdAt,
+            server: serverData ? {
+              slug: serverData.slug,
+              name: serverData.name,
+              symbol: serverData.symbol,
+            } : null,
+          };
+        } catch (error) {
+          console.error(`Error enriching transaction ${tx.id}:`, error);
+          return {
+            id: tx.id,
+            iaoToken: tx.iaoToken,
+            from: tx.from,
+            globalRequestNumber: tx.globalRequestNumber,
+            fee: tx.fee,
+            createdAt: tx.createdAt,
+            server: null,
+          };
+        }
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: enrichedTransactions.length,
+      transactions: enrichedTransactions,
+    });
+  } catch (error: any) {
+    console.error("Error fetching transactions:", error);
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch transactions"
+    });
+  }
+})
+
+/**
+ * GET /api/metrics/:serverSlug - Get metrics for a server
+ * Returns aggregated metrics including API calls, revenue, latency, and contract metrics
+ */
+app.get('/api/metrics/:serverSlug', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+
+  try {
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Get server metrics from Firestore
+    let serverMetrics = null
+    if (metricsService) {
+      serverMetrics = await metricsService.getServerMetrics(tokenEntry.id)
+    }
+
+    // Get contract metrics (bonding progress, token distribution)
+    // Skip for Solana tokens - they don't use EVM contracts
+    let contractMetrics = null
+    let paymentTokenPrice: bigint | null = null
+    let paymentTokenDecimals: number | null = null
+
+    // Determine chain type from stored chainId or address format
+    const tokenChainType = tokenEntry.chainId
+      ? getChainTypeFromId(tokenEntry.chainId)
+      : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
+
+    // Check if this token uses Merkle distribution model (DB-tracked progress)
+    const tokenDBEntryForMetrics = tokenService ? await tokenService.getItem(tokenEntry.id) : null
+    const useMerkleMetrics = tokenDBEntryForMetrics?.distributionModel === 'merkle'
+
+    // Only fetch EVM contract metrics for EVM tokens
+    if (tokenChainType === "solana") {
+      console.log(`⏭️  Solana bonding metrics for: ${tokenEntry.id}`)
+
+      // Graduation threshold in tokens (625M tokens with 18 decimals) - matches EVM
+      // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+      const testThreshold = process.env.TEST_GRADUATION_THRESHOLD
+      const tokenGraduationThreshold = testThreshold ? BigInt(testThreshold) : BigInt("625000000000000000000000000")
+
+      // Read virtualTokensDistributed from DB for Merkle model, else placeholder
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
+
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
+
+      // Set payment token info for Solana (used for tokensPerCall calculation)
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: tokenGraduationThreshold.toString(),
+        totalTokensDistributed: totalTokensDistributed.toString(),
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
+        isGraduated,
+        chainType: "solana",
+        paymentTokenPrice: paymentTokenPrice.toString(),
+        paymentTokenDecimals,
+        distributionModel: tokenDBEntryForMetrics?.distributionModel || "batch",
+      }
+
+      console.log(`📊 Solana bonding metrics: ${totalTokensDistributed.toString()} tokens distributed`)
+    } else if (useMerkleMetrics) {
+      // Merkle distribution model: read bonding progress from DB instead of on-chain
+      console.log(`📊 Fetching DB-tracked metrics for Merkle token: ${tokenEntry.id}`)
+
+      // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+      const testThresholdMerkle = process.env.TEST_GRADUATION_THRESHOLD
+      const tokenGraduationThreshold = testThresholdMerkle ? BigInt(testThresholdMerkle) : BigInt("625000000000000000000000000")
+      const totalTokensDistributed = BigInt(tokenDBEntryForMetrics?.virtualTokensDistributed || "0")
+
+      let bondingProgress = 0
+      if (tokenGraduationThreshold > 0n) {
+        bondingProgress = Number(totalTokensDistributed) / Number(tokenGraduationThreshold) * 100
+        if (!isFinite(bondingProgress)) bondingProgress = 0
+      }
+
+      const isGraduated = tokenDBEntryForMetrics?.graduated === true
+
+      paymentTokenPrice = BigInt(tokenDBEntryForMetrics?.paymentTokenPrice || "25000000000000000000000")
+      paymentTokenDecimals = tokenDBEntryForMetrics?.paymentTokenDecimals ?? 6
+
+      let uniswapLink: string | undefined
+      if (isGraduated) {
+        // Use swap interface for Base Sepolia (explore page doesn't support testnets)
+        uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
+      }
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: tokenGraduationThreshold.toString(),
+        totalTokensDistributed: totalTokensDistributed.toString(),
+        totalFeesCollected: tokenDBEntryForMetrics?.totalFeesCollected || "0",
+        bondingProgress: Math.min(bondingProgress, 100),
+        isGraduated,
+        uniswapLink,
+        paymentTokenPrice: paymentTokenPrice.toString(),
+        paymentTokenDecimals,
+        distributionModel: "merkle",
+        merkleRoot: tokenDBEntryForMetrics?.merkleRoot || null,
+      }
+    } else try {
+      // Legacy batch distribution model: read from on-chain via evmContractService (viem)
+      console.log(`📊 Fetching contract metrics for token: ${tokenEntry.id}`)
+
+      const onChain = await evmContractService.getTokenMetrics(tokenEntry.id)
+      if (!onChain) throw new Error("evmContractService.getTokenMetrics returned null")
+
+      // Also try to fetch payment token info from factory
+      const factoryInfo = await evmContractService.getFactoryInfo()
+      if (factoryInfo) {
+        paymentTokenPrice = BigInt(factoryInfo.paymentTokenPrice)
+        paymentTokenDecimals = factoryInfo.paymentTokenDecimals
+      }
+
+      console.log(`📊 Contract values for ${tokenEntry.id}:`, {
+        graduationThreshold: onChain.graduationThreshold,
+        totalTokensDistributed: onChain.totalTokensDistributed,
+        totalFeesCollected: onChain.totalFeesCollected,
+        liquidityDeployed: onChain.liquidityDeployed,
+      })
+
+      const isGraduated = onChain.liquidityDeployed
+
+      // Generate Uniswap link if graduated (Base Sepolia)
+      let uniswapLink: string | undefined
+      if (isGraduated) {
+        uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
+      }
+
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: onChain.graduationThreshold,
+        totalTokensDistributed: onChain.totalTokensDistributed,
+        totalFeesCollected: onChain.totalFeesCollected,
+        bondingProgress: onChain.bondingProgress,
+        isGraduated,
+        uniswapLink,
+        paymentTokenPrice: paymentTokenPrice?.toString() || null,
+        paymentTokenDecimals: paymentTokenDecimals,
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorStack = error instanceof Error ? error.stack : undefined
+      console.error(`❌ Failed to fetch contract metrics for ${tokenEntry.id}:`, errorMessage)
+      if (errorStack) {
+        console.error("Error stack:", errorStack)
+      }
+      
+      // Return fallback on error with detailed error info
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: "0",
+        totalTokensDistributed: "0",
+        totalFeesCollected: "0",
+        bondingProgress: 0,
+        isGraduated: false,
+        paymentTokenPrice: null,
+        paymentTokenDecimals: null,
+        error: errorMessage,
+      }
+    }
+
+    // Calculate token amount per API call for each API
+    const apisWithTokenAmounts = tokenEntry.apis?.map(api => {
+      let tokensPerCall: string | null = null
+      
+      if (paymentTokenPrice && paymentTokenDecimals !== null) {
+        try {
+          const feeBigInt = BigInt(api.fee)
+          // Calculate: (fee * paymentTokenPrice) / (10^paymentTokenDecimals)
+          const tokenAmount = (feeBigInt * paymentTokenPrice) / BigInt(10 ** paymentTokenDecimals)
+          tokensPerCall = tokenAmount.toString()
+        } catch (calcError) {
+          console.warn(`Failed to calculate token amount for API ${api.slug}:`, calcError)
+        }
+      }
+      
+      return {
+        ...api,
+        tokensPerCall,
+      }
+    }) || []
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      metrics: {
+        server: serverMetrics,
+        contract: contractMetrics,
+      },
+      apisWithTokenAmounts,
+    })
+  } catch (error: any) {
+    console.error("Error fetching metrics:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch metrics"
+    })
+  }
+})
+
+/**
+ * GET /api/metrics/:serverSlug/:apiSlug - Get metrics for a specific API
+ */
+app.get('/api/metrics/:serverSlug/:apiSlug', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const apiSlug = req.params.apiSlug.toLowerCase()
+
+  try {
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    const api = getApiFromTokenBySlug(tokenEntry, apiSlug)
+    if (!api) {
+      return res.status(404).json({
+        error: "API not found",
+        message: `No API found with slug "${apiSlug}" in server "${serverSlug}"`
+      })
+    }
+
+    // Get API metrics (using last 100 calls)
+    let apiMetrics = null
+    let successRate = 0
+    if (metricsService) {
+      const rawMetrics = await metricsService.getApiMetrics(tokenEntry.id, apiSlug)
+      if (rawMetrics) {
+        // Calculate metrics from last 100 calls if available
+        let recentMetrics;
+        if (rawMetrics.recentCalls && rawMetrics.recentCalls.length > 0) {
+          recentMetrics = metricsService.calculateRecentMetrics(rawMetrics.recentCalls)
+          successRate = recentMetrics.successRate
+        } else {
+          // Fallback to aggregated counts
+          const success = BigInt(rawMetrics.successCount)
+          const failure = BigInt(rawMetrics.failureCount)
+          const totalAttempts = success + failure
+          successRate = totalAttempts > 0n
+            ? (Number(success) / Number(totalAttempts)) * 100
+            : 0
+        }
+        
+        // Add calculated success rate and recent metrics info
+        apiMetrics = {
+          ...rawMetrics,
+          successRate,
+          // Include info about whether metrics are from recent calls
+          metricsFromLast100Calls: rawMetrics.recentCalls && rawMetrics.recentCalls.length > 0,
+          recentCallCount: rawMetrics.recentCalls?.length || 0,
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      apiSlug,
+      metrics: {
+        api: apiMetrics,
+      },
+    })
+  } catch (error: any) {
+    console.error("Error fetching API metrics:", error)
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "Failed to fetch API metrics"
+    })
+  }
+})
+
+/**
+ * IAO Proxy Endpoint: /api/:serverSlug/:apiSlug
+ * 
+ * Flow with Thirdweb facilitator:
+ * 1. Query Firestore for server by slug
+ * 2. Get specific API by slug
+ * 3. Use thirdweb's settlePayment() to verify and process payment
+ * 4. If payment verified, forward request to builder endpoint
+ * 5. Return builder response to user
+ * 
+ * @param serverSlug - Server slug (e.g., "magpie")
+ * @param apiSlug - API slug (e.g., "eigenpie-pool")
+ */
+
+// Handle HEAD requests - facilitator uses these for validation
+app.head('/api/:serverSlug/:apiSlug', async (req, res) => {
+  res.status(200).end()
+})
+
+/**
+ * Handler for GET /api/:serverSlug/:apiSlug
+ * 
+ * NEW FLOW: Charge fee ONLY AFTER builder successfully returns a response
+ * 1. Validate payment data is present (but don't settle yet)
+ * 2. Forward request to builder endpoint
+ * 3. If builder returns success (2xx), THEN settle payment
+ * 4. If builder fails, return error WITHOUT charging
+ */
+async function handleApiProxyRequest(req: any, res: any, serverSlug: string, apiSlug: string) {
+  let tokenEntry: IAOTokenEntry | null = null
+  let requestStartTime = Date.now()
+  
+  try {
+    // Query Firestore for server by slug
+    tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+
+    if (!tokenEntry) {
+      return res.status(404).json({
+        error: "Server not found",
+        message: `No server registered with slug "${serverSlug}"`
+      })
+    }
+
+    // Get the specific API by slug
+    const api = getApiFromTokenBySlug(tokenEntry, apiSlug)
+    if (!api) {
+      return res.status(404).json({
+        error: "API not found",
+        message: `No API found with slug "${apiSlug}" in server "${serverSlug}"`,
+        availableApis: tokenEntry.apis?.map(a => ({ slug: a.slug, name: a.name })) || []
+      })
+    }
+
+    console.log(`📡 Proxy request for server ${serverSlug}, API ${apiSlug}: ${api.name}`)
+
+    // Determine if this is a Solana server
+    const serverChainType = tokenEntry.chainId
+      ? getChainTypeFromId(tokenEntry.chainId)
+      : (isValidEvmAddress(tokenEntry.id) ? "evm" : "solana")
+    const isSolanaServer = serverChainType === "solana"
+
+    console.log(`📡 Server chain type: ${serverChainType} (chainId: ${tokenEntry.chainId || 'not set'})`)
+
+    // Get payment data from header (x402 V2: PAYMENT-SIGNATURE, fallback to X-PAYMENT for V1 compatibility)
+    const paymentData = (req.headers['payment-signature'] || req.headers['x-payment']) as string | undefined
+    
+    // Convert subscription fee from wei to USD string (assuming 6 decimals for USDC)
+    const subscriptionFeeWei = BigInt(api.fee)
+    const subscriptionFeeUSD = Number(subscriptionFeeWei) / 1e6
+    const priceString = `$${subscriptionFeeUSD.toFixed(2)}`
+
+    // Check if payment is required
+    if (openFacilitator) {
+      if (!paymentData) {
+        // No payment data provided - return 402 with payment requirements
+        // With OpenFacilitator, payTo = IAO token address directly (no intermediary wallet)
+        const payToAddress = tokenEntry.id
+
+        console.log('💰 Returning 402 Payment Required:', {
+          payTo: payToAddress,
+          asset: tokenEntry.paymentToken,
+          amount: api.fee,
+          serverSlug,
+          apiSlug,
+          timestamp: new Date().toISOString()
+        })
+
+        // Determine network using CAIP-2 format (x402 V2)
+        const networkFormat = isSolanaServer
+          ? "solana:devnet"
+          : `eip155:${baseSepolia.id}`
+
+        const baseUrl = `${req.protocol}://${req.get('host')}`
+        const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
+
+        return res.status(402).json({
+          x402Version: 2,
+          error: "Payment required",
+          accepts: [{
+            scheme: "exact",
+            network: networkFormat,
+            payTo: payToAddress,
+            asset: tokenEntry.paymentToken,
+            amount: api.fee,
+            maxTimeoutSeconds: 300,
+            resource: resourceUrl,
+            description: api.description || `${tokenEntry.name} - ${api.name}`,
+            extra: {
+              finalRecipient: tokenEntry.id,
+              serverSlug: serverSlug,
+              apiSlug: apiSlug,
+            },
+          }],
+        })
+      }
+      
+      // Verify payment authorization BEFORE calling builder
+      // With OpenFacilitator, user signs payment directly to IAO token address
+
+      if (isSolanaServer) {
+        // Solana payment verification
+        console.log("📝 Verifying Solana payment authorization...")
+        try {
+          const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+          const paymentProof = JSON.parse(decoded)
+
+          // Basic validation for Solana payment - now expects signedTransaction
+          if (!paymentProof.payload?.signedTransaction || !paymentProof.payload?.authorization) {
+            throw new Error("Missing signedTransaction or authorization in payment proof")
+          }
+
+          // Check network is Solana
+          if (!paymentProof.network?.startsWith("solana")) {
+            throw new Error("Invalid network - expected Solana")
+          }
+
+          // Verify authorization contains required fields
+          const auth = paymentProof.payload.authorization
+          if (!auth.from || !auth.to || !auth.amount) {
+            throw new Error("Missing required authorization fields (from, to, amount)")
+          }
+
+          // Verify recipient matches server address
+          if (auth.to !== tokenEntry.id) {
+            throw new Error(`Payment recipient mismatch: expected ${tokenEntry.id}, got ${auth.to}`)
+          }
+
+          // Verify amount meets minimum fee
+          const paymentAmount = BigInt(auth.amount)
+          const requiredAmount = BigInt(api.fee)
+          if (paymentAmount < requiredAmount) {
+            throw new Error(`Insufficient payment: ${paymentAmount} < ${requiredAmount}`)
+          }
+
+          console.log("✅ Solana payment data verified:")
+          console.log(`   From: ${auth.from}`)
+          console.log(`   To: ${auth.to}`)
+          console.log(`   Amount: ${auth.amount}`)
+        } catch (solanaErr: any) {
+          console.error("❌ Solana payment validation failed:", solanaErr.message)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
+          return res.status(402).json({
+            x402Version: 2,
+            error: solanaErr.message || "Solana payment authorization is invalid",
+            accepts: [{
+              scheme: "exact",
+              network: "solana:devnet",
+              payTo: tokenEntry.id,
+              asset: tokenEntry.paymentToken,
+              amount: api.fee,
+              maxTimeoutSeconds: 300,
+              extra: { finalRecipient: tokenEntry.id },
+            }],
+            resource: {
+              url: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              mimeType: "application/json",
+            },
+            extensions: {
+              bazaar: {
+                info: { input: {}, output: { success: true, data: {} } },
+                schema: { type: "object", properties: {}, required: [] },
+              },
+            },
+          })
+        }
+      } else {
+        // EVM payment verification
+        // With OpenFacilitator, user pays directly to IAO token address (tokenEntry.id)
+        console.log("📝 Verifying EVM payment authorization...")
+        const verifyResult = await verifyPaymentAuthorization(
+          paymentData,
+          tokenEntry.id,  // payTo = IAO token address (OpenFacilitator settles directly)
+          api.fee, // Use API-specific fee
+          tokenEntry.paymentToken
+        )
+
+        if (!verifyResult.valid) {
+          console.error("❌ Payment authorization invalid:", verifyResult.error)
+          const baseUrl = `${req.protocol}://${req.get('host')}`
+          const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
+          return res.status(402).json({
+            x402Version: 2,
+            error: verifyResult.error || "Payment authorization is invalid",
+            accepts: [{
+              scheme: "exact",
+              network: `eip155:${baseSepolia.id}`,
+              payTo: tokenEntry.id,
+              asset: tokenEntry.paymentToken,
+              amount: api.fee,
+              maxTimeoutSeconds: 300,
+              resource: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
+              extra: { finalRecipient: tokenEntry.id },
+            }],
+          })
+        }
+      }
+
+      console.log("✅ Payment authorization valid - will execute AFTER successful builder response")
+    } else {
+      console.warn("⚠️  x402 Facilitator not configured - skipping payment verification")
+    }
+
+    // STEP 1: Forward request to builder endpoint FIRST (before settling payment)
+    let builderResponse: any
+    let parsedData: any
+    let builderSuccess = false
+    requestStartTime = Date.now() // Update latency tracking for builder call
+    
+    try {
+      // Build builder endpoint URL with query parameters
+      const builderUrl = new URL(api.apiUrl)
+
+      // Preserve the raw query string from the original request to avoid
+      // URLSearchParams reformatting (e.g. adding '=' to valueless params)
+      const rawQuery = req.originalUrl.includes('?')
+        ? req.originalUrl.split('?').slice(1).join('?')
+        : ''
+      if (rawQuery) {
+        builderUrl.search = rawQuery
+      }
+
+      console.log(`Forwarding request to builder endpoint (BEFORE payment): ${builderUrl.toString()}`)
+
+      // Forward request to builder endpoint
+      const forwardHeaders: Record<string, string> = {}
+      Object.entries(req.headers).forEach(([key, value]) => {
+        const lowerKey = key.toLowerCase()
+        // Filter out payment headers (V1 and V2)
+        if (!['host', 'x-payment', 'payment-signature', 'x-payment-proof', 'x-payment-token', 'x-payment-amount'].includes(lowerKey)) {
+          forwardHeaders[key] = Array.isArray(value) ? value.join(', ') : (value as string || '')
+        }
+      })
+
+      // Add JWT authentication header if secret phrase is configured
+      if (BUILDER_SECRET_PHRASE) {
+        try {
+          const jwtToken = generateBuilderJWT(
+            tokenEntry.id,
+            api.apiUrl,
+            BUILDER_SECRET_PHRASE,
+            '5m'
+          )
+          forwardHeaders['X-IAO-Auth'] = jwtToken
+          console.log("✅ Added JWT authentication header for builder endpoint")
+        } catch (jwtError: any) {
+          console.error("⚠️  Failed to generate JWT token:", jwtError)
+        }
+      }
+      
+      // Create AbortController for timeout
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000)
+      
+      try {
+        builderResponse = await fetch(builderUrl.toString(), {
+          method: req.method,
+          headers: {
+            ...forwardHeaders,
+            'User-Agent': 'IAO-Proxy/1.0',
+            'Accept': 'application/json, */*',
+            'Accept-Encoding': 'identity'
+          },
+          body: req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : undefined,
+          signal: controller.signal
+        })
+        clearTimeout(timeoutId)
+
+        // Parse response
+        const contentType = builderResponse.headers.get('content-type') || ''
+        const contentEncoding = builderResponse.headers.get('content-encoding') || ''
+        
+        console.log("Builder response:", {
+          status: builderResponse.status,
+          contentType,
+          contentEncoding
+        })
+        
+        // Handle zstd compression
+        if (contentEncoding && contentEncoding.toLowerCase().includes('zstd')) {
+          console.log("🗜️  Response is zstd compressed - decompressing...")
+          try {
+            // Get the compressed data as a buffer
+            const compressedData = await builderResponse.arrayBuffer()
+            const compressedBuffer = Buffer.from(compressedData)
+
+            // Decompress using fzstd
+            const decompressedBuffer = decompressZstd(compressedBuffer)
+            const decompressedText = Buffer.from(decompressedBuffer).toString('utf-8')
+
+            console.log("✅ Successfully decompressed zstd data")
+
+            // Parse the decompressed data
+            if (contentType.includes('application/json') ||
+                decompressedText.trim().startsWith('{') ||
+                decompressedText.trim().startsWith('[')) {
+              parsedData = JSON.parse(decompressedText)
+              console.log("✅ Parsed decompressed data as JSON")
+            } else {
+              parsedData = decompressedText
+            }
+          } catch (decompressError: any) {
+            console.error("❌ Failed to decompress zstd data:", decompressError)
+            parsedData = {
+              error: "Decompression failed",
+              message: `Failed to decompress zstd data: ${decompressError.message}`
+            }
+          }
+        } else {
+          try {
+            if (contentType.includes('application/json')) {
+              parsedData = await builderResponse.json()
+              console.log("✅ Parsed as JSON successfully")
+            } else {
+              const responseText = await builderResponse.text()
+              try {
+                parsedData = JSON.parse(responseText)
+              } catch {
+                parsedData = responseText
+              }
+            }
+          } catch (parseError: any) {
+            parsedData = { 
+              error: "Failed to parse response", 
+              message: parseError.message || "Unable to decode response"
+            }
+          }
+        }
+
+        // Check if builder response was successful (2xx status)
+        builderSuccess = builderResponse.status >= 200 && builderResponse.status < 300
+        console.log(`Builder response status: ${builderResponse.status}, success: ${builderSuccess}`)
+
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId)
+        
+        const latencyMs = Date.now() - requestStartTime
+        
+        if (fetchError.name === 'AbortError' || fetchError.code === 'ETIMEDOUT') {
+          console.error("❌ Builder endpoint timeout - NOT charging user")
+          
+          // Record failure metrics for timeout
+          if (metricsService) {
+            metricsService.recordApiCall(
+              tokenEntry.id,
+              apiSlug,
+              "0", // No fee charged on failure
+              false, // failure
+              latencyMs
+            ).catch(err => {
+              console.error("⚠️  Failed to record metrics:", err)
+            })
+          }
+          
+          return res.status(504).json({
+            error: "Builder endpoint timeout",
+            message: "The builder endpoint did not respond within 60 seconds. You have NOT been charged.",
+            x402Version: 2,
+            serverSlug,
+            apiSlug,
+            apiName: api.name,
+            charged: false
+          })
+        }
+        
+        console.error("❌ Builder endpoint fetch error - NOT charging user:", fetchError)
+        
+        // Record failure metrics for fetch error
+        if (metricsService) {
+          metricsService.recordApiCall(
+            tokenEntry.id,
+            apiSlug,
+            "0", // No fee charged on failure
+            false, // failure
+            latencyMs
+          ).catch(err => {
+            console.error("⚠️  Failed to record metrics:", err)
+          })
+        }
+        
+        return res.status(502).json({
+          error: "Builder endpoint error",
+          message: "Failed to fetch from builder endpoint. You have NOT been charged.",
+          x402Version: 2,
+          serverSlug,
+          apiSlug,
+          apiName: api.name,
+          charged: false
+        })
+      }
+    } catch (forwardError: any) {
+      console.error("❌ Error forwarding to builder - NOT charging user:", forwardError)
+      
+      const latencyMs = Date.now() - requestStartTime
+      
+      // Record failure metrics for forward error
+      if (metricsService) {
+        metricsService.recordApiCall(
+          tokenEntry.id,
+          apiSlug,
+          "0", // No fee charged on failure
+          false, // failure
+          latencyMs
+        ).catch(err => {
+          console.error("⚠️  Failed to record metrics:", err)
+        })
+      }
+      
+      return res.status(502).json({
+        error: "Builder endpoint error",
+        message: "Failed to reach builder endpoint. You have NOT been charged.",
+        x402Version: 2,
+        serverSlug,
+        apiSlug,
+        apiName: api.name,
+        charged: false
+      })
+    }
+
+    // STEP 2: If builder failed, return error WITHOUT charging
+    if (!builderSuccess) {
+      console.log(`❌ Builder returned error status ${builderResponse.status} - NOT charging user`)
+      
+      // Record failure metrics (no revenue, but track failure)
+      if (metricsService) {
+        const latencyMs = Date.now() - requestStartTime
+        metricsService.recordApiCall(
+          tokenEntry.id,
+          apiSlug,
+          "0", // No fee charged on failure
+          false, // failure
+          latencyMs
+        ).catch(err => {
+          console.error("⚠️  Failed to record metrics:", err)
+        })
+      }
+      
+      return res.status(builderResponse.status).json({
+        error: "Builder endpoint returned error",
+        message: "The API returned an error. You have NOT been charged.",
+        x402Version: 2,
+        builderStatus: builderResponse.status,
+        data: parsedData,
+        serverSlug,
+        apiSlug,
+        apiName: api.name,
+        charged: false
+      })
+    }
+
+    // STEP 3: Builder succeeded - NOW execute the payment
+    console.log("✅ Builder returned success - NOW executing payment to token address")
+    
+    // Variable to capture transaction hash from payment (used in response)
+    let settledTxHash: string | undefined = undefined
+
+    if (openFacilitator && paymentData) {
+      try {
+        // Solana payment settlement
+        if (isSolanaServer) {
+          console.log("💸 Processing Solana payment settlement...")
+
+          let solanaPaymentSuccess = false
+          let solanaTxSignature: string | null = null
+
+          try {
+            // Parse the payment proof
+            const decoded = Buffer.from(paymentData, 'base64').toString('utf-8')
+            const paymentProof = JSON.parse(decoded)
+
+            // Get the signed transaction from the payload
+            const signedTransactionBase64 = paymentProof.payload?.signedTransaction
+            if (!signedTransactionBase64) {
+              throw new Error("Missing signed transaction in payment proof")
+            }
+
+            // Deserialize the signed transaction
+            const transactionBytes = Buffer.from(signedTransactionBase64, 'base64')
+            const transaction = Transaction.from(transactionBytes)
+
+            console.log("📝 Submitting signed Solana transaction...")
+            console.log(`   From: ${paymentProof.payload?.authorization?.from}`)
+            console.log(`   To: ${paymentProof.payload?.authorization?.to}`)
+            console.log(`   Amount: ${paymentProof.payload?.authorization?.amount}`)
+
+            // Connect to Solana devnet and submit the transaction
+            const connection = new Connection(SOLANA_DEVNET_RPC, "confirmed")
+
+            let signature: string
+            let isAlreadyProcessed = false
+
+            try {
+              // Send the raw signed transaction
+              signature = await connection.sendRawTransaction(
+                transaction.serialize(),
+                {
+                  skipPreflight: false,
+                  preflightCommitment: "confirmed",
+                }
+              )
+
+              console.log(`📤 Transaction submitted: ${signature}`)
+            } catch (sendErr: any) {
+              // Check if transaction was already processed
+              if (sendErr.message && sendErr.message.includes("already been processed")) {
+                console.log("⚠️  Transaction already processed, checking status...")
+                isAlreadyProcessed = true
+
+                // Extract signature from the transaction
+                signature = bs58.encode(transaction.signature!)
+
+                // Verify the transaction exists and succeeded
+                const txStatus = await connection.getSignatureStatus(signature)
+                if (!txStatus || !txStatus.value) {
+                  throw new Error("Transaction was marked as processed but status not found")
+                }
+
+                if (txStatus.value.err) {
+                  throw new Error(`Previously processed transaction failed: ${JSON.stringify(txStatus.value.err)}`)
+                }
+
+                console.log("✅ Transaction was already successfully processed")
+              } else {
+                throw sendErr
+              }
+            }
+
+            // Wait for confirmation if not already processed
+            if (!isAlreadyProcessed) {
+              const confirmation = await connection.confirmTransaction(signature, "confirmed")
+
+              if (confirmation.value.err) {
+                throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`)
+              }
+            }
+
+            console.log("✅ Solana payment settled successfully!")
+            console.log(`   Signature: ${signature}`)
+            console.log(`   Explorer: https://explorer.solana.com/tx/${signature}?cluster=devnet`)
+
+            solanaPaymentSuccess = true
+            solanaTxSignature = signature
+            settledTxHash = signature  // Capture for response
+          } catch (solanaSettleErr: any) {
+            console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
+
+            // Never return API data unless payment is confirmed settled.
+            return res.status(402).json({
+              error: "Payment settlement failed",
+              message: "Your Solana payment could not be executed. You have NOT been charged.",
+              paymentError: solanaSettleErr.message,
+              serverSlug,
+              apiSlug,
+              charged: false
+            })
+          }
+
+          // Metrics for Solana will be recorded in the async post-payment block below
+        } else {
+          // EVM payment settlement via Thirdweb
+          console.log("Executing EVM payment transfer:", {
+            payTo: tokenEntry.id,
+            amount: api.fee, // Use API-specific fee
+            paymentToken: tokenEntry.paymentToken,
+            serverSlug,
+            apiSlug,
+          })
+
+          const paymentResult = await executePaymentTransfer(
+            paymentData,
+            tokenEntry.paymentToken,
+            req,
+            tokenEntry.id,
+            api.fee, // Use API-specific fee
+            serverSlug,
+            apiSlug,
+            api.name
+          )
+
+          if (!paymentResult.success) {
+            console.error("❌ Payment settlement failed — withholding API data")
+            console.error("Payment error:", paymentResult.error)
+            res.set('X-Payment-Settlement', 'failed')
+            res.set('X-Payment-Error', (paymentResult.error || 'settlement failed').slice(0, 200))
+            return res.status(402).json({
+              error: "Payment settlement failed",
+              message: "Your payment could not be processed. You have NOT been charged. Please retry.",
+              paymentError: paymentResult.error,
+              serverSlug,
+              apiSlug,
+              charged: false
+            })
+          }
+
+          console.log("✅ Payment executed successfully:", paymentResult.txHash)
+          settledTxHash = paymentResult.txHash  // Capture for response
+        } // end else (EVM payment)
+
+        // STEP 4: Fire-and-forget post-payment processing
+        // These updates happen async to reduce response latency
+        const postPaymentLatencyMs = Date.now() - requestStartTime
+        setImmediate(async () => {
+          console.log(`📊 STEP 4 (async): Post-payment processing...`)
+          try {
+            // Record metrics (async)
+            if (metricsService) {
+              await metricsService.recordApiCall(
+                tokenEntry.id,
+                apiSlug,
+                api.fee,
+                true, // success
+                postPaymentLatencyMs
+              )
+            }
+
+            // Update subscription count and request queue
+            if (userRequestService && paymentData && tokenService) {
+              const userAddress = extractUserAddressFromPayment(paymentData)
+              if (userAddress) {
+                const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
+                if (tokenDBEntry) {
+                  const currentSubscriptionCount = BigInt(tokenDBEntry.subscriptionCount || "0")
+                  const globalRequestNumber = (currentSubscriptionCount + BigInt(1)).toString()
+
+                  // Create request queue entry and update subscription count in parallel
+                  await Promise.all([
+                    userRequestService.createRequestQueueEntry(
+                      tokenEntry.id,
+                      userAddress,
+                      globalRequestNumber,
+                      api.fee
+                    ),
+                    (async () => {
+                      const newSubscriptionCount = (currentSubscriptionCount + BigInt(1)).toString()
+                      const updatedTokenEntry: IAOTokenDBEntry = {
+                        ...tokenDBEntry,
+                        subscriptionCount: newSubscriptionCount,
+                        updatedAt: new Date().toISOString(),
+                      }
+                      await tokenService.putItem(updatedTokenEntry)
+                      await invalidateCache(CacheKeys.SERVER_BY_SLUG(tokenEntry.slug))
+                      console.log(`✅ Updated subscriptionCount: ${newSubscriptionCount}`)
+                    })()
+                  ])
+
+                  // Track virtual token earnings for Merkle claim distribution
+                  if (earningsService && tokenDBEntry.distributionModel === 'merkle') {
+                    try {
+                      const ptp = BigInt(tokenDBEntry.paymentTokenPrice || "25000000000000000000000")
+                      const ptd = tokenDBEntry.paymentTokenDecimals ?? 6
+                      const tokensEarned = (BigInt(api.fee) * ptp) / BigInt(10 ** ptd)
+
+                      // Atomically increment virtual distribution + earnings in a single Firestore transaction.
+                      // Prevents race where graduation reads earnings before a concurrent request writes them.
+                      // Also caps tokens at graduation threshold — no overflow.
+                      const incrementResult = await tokenService.incrementVirtualDistributedWithEarnings(
+                        tokenEntry.id,
+                        userAddress,
+                        tokensEarned.toString(),
+                        api.fee
+                      )
+                      console.log(`✅ Earnings tracked: ${incrementResult.actualTokensCredited} tokens for ${userAddress} (requested: ${tokensEarned.toString()})`)
+
+                      // Check if graduation threshold was crossed
+                      if (!incrementResult.graduated) {
+                        // Graduation thresholds: EVM (18 decimals) vs Solana (9 decimals)
+                        const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+                        const isSolana = solanaChains.includes(incrementResult.chainId)
+
+                        // Check for test graduation threshold override (for testing with small amounts)
+                        const testThreshold = process.env.TEST_GRADUATION_THRESHOLD
+                        const defaultThreshold = isSolana
+                          ? BigInt("625000000000000000")        // 625M with 9 decimals
+                          : BigInt("625000000000000000000000000") // 625M with 18 decimals
+
+                        const threshold = testThreshold ? BigInt(testThreshold) : defaultThreshold
+
+                        if (testThreshold) {
+                          console.log(`⚠️ TEST MODE: Using graduation threshold override: ${testThreshold}`)
+                        }
+
+                        if (BigInt(incrementResult.newTotal) >= threshold) {
+                          console.log(`🎓 Graduation threshold crossed for ${tokenEntry.id}! Dispatching graduation task...`)
+                          try {
+                            await dispatchGraduationTask({
+                              tokenAddress: tokenEntry.id,
+                              chainId: incrementResult.chainId,
+                              virtualDistributed: incrementResult.newTotal,
+                              totalFeesCollected: incrementResult.totalFeesCollected,
+                            })
+                          } catch (dispatchErr) {
+                            console.error("⚠️  Graduation dispatch error (non-blocking):", dispatchErr)
+                          }
+                        }
+                      }
+                    } catch (earningsError) {
+                      console.error("⚠️  Earnings tracking error (non-blocking):", earningsError)
+                    }
+                  }
+                }
+              }
+            }
+            console.log(`✅ Post-payment processing completed`)
+          } catch (postPaymentError: any) {
+            console.error("⚠️  Post-payment processing error (non-blocking):", postPaymentError)
+            // TODO: Add to retry queue for failed post-payment updates
+          }
+        })
+      } catch (paymentError: any) {
+        console.error("❌ Payment settlement error:", paymentError)
+        // Return data but indicate payment failed
+        return res.status(500).json({
+          error: "Payment processing error",
+          message: "Builder returned data successfully, but payment processing failed.",
+          x402Version: 2,
+          data: parsedData,
+          serverSlug,
+          apiSlug,
+          charged: false
+        })
+      }
+    }
+
+    // STEP 5: Return successful response with data
+    console.log("✅ Returning successful response with payment confirmed")
+
+    // Set x402 V2 response header
+    res.setHeader('PAYMENT-RESPONSE', 'paid')
+
+    // Build response object
+    const responseObject: any = {
+      data: parsedData,
+      x402Version: 2,
+      payment: {
+        status: "paid",
+        tokenAddress: tokenEntry.id,
+        paymentToken: tokenEntry.paymentToken,
+        charged: true,
+        // Include transaction hash if available (from EVM or Solana payment)
+        ...(settledTxHash && { txHash: settledTxHash })
+      },
+      proxy: {
+        serverSlug: serverSlug,
+        apiSlug: apiSlug,
+        apiName: api.name,
+        timestamp: new Date().toISOString()
+      }
+    }
+
+    // Handle 202 Accepted - async operation started
+    // Automatically poll for the result before returning to client
+    if (builderResponse.status === 202) {
+      console.log("⏳ Builder returned 202 Accepted - starting automatic polling")
+
+      // Extract status URL from response or Location header
+      const statusUrl = parsedData?.statusUrl
+        || parsedData?.status_url
+        || builderResponse.headers.get('Location')
+
+      if (statusUrl) {
+        // Poll for the final result
+        const pollResult = await pollForProxyResult(statusUrl, api.apiUrl)
+
+        if (pollResult.success) {
+          // Return the completed result
+          responseObject.data = pollResult.result
+          responseObject.async = {
+            wasAsync: true,
+            jobId: parsedData?.jobId || parsedData?.job_id,
+            message: "Async operation completed successfully"
+          }
+          console.log("✅ Async operation completed - returning final result")
+          console.log("📤 Response data:", JSON.stringify(responseObject.data, null, 2))
+          res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
+          return
+        } else {
+          // Polling failed or timed out
+          responseObject.data = parsedData
+          responseObject.async = {
+            isAsync: true,
+            statusUrl: statusUrl,
+            jobId: parsedData?.jobId || parsedData?.job_id,
+            error: pollResult.error,
+            message: "Async operation did not complete in time. You can manually poll the statusUrl for the result."
+          }
+          console.log("⚠️ Async polling failed:", pollResult.error)
+          return res.status(pollResult.status).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
+        }
+      } else {
+        // No status URL provided - return 202 as-is
+        responseObject.data = parsedData
+        responseObject.async = {
+          isAsync: true,
+          message: "API returned 202 but no status URL was provided for polling."
+        }
+        console.log("⚠️ No status URL in 202 response - cannot poll")
+      }
+    }
+
+    res.status(builderResponse.status).setHeader('Content-Type', 'application/json; charset=utf-8').json(responseObject)
+
+    console.log("Payment settled for API - automation should mint rewards", {
+      tokenAddress: tokenEntry.id,
+      tokenSymbol: tokenEntry.symbol,
+      serverSlug,
+      apiSlug,
+      apiName: api.name
+    })
+
+  } catch (error: any) {
+    console.error("Error in IAO proxy endpoint:", error)
+    
+    // Record failure metrics if we have token entry info (error happened during builder call or after)
+    if (tokenEntry && metricsService) {
+      const latencyMs = Date.now() - requestStartTime
+      metricsService.recordApiCall(
+        tokenEntry.id,
+        apiSlug,
+        "0", // No fee charged on error
+        false, // failure
+        latencyMs
+      ).catch(err => {
+        console.error("⚠️  Failed to record metrics:", err)
+      })
+    }
+    
+    return res.status(500).json({
+      error: "Internal server error",
+      message: error.message || "An unexpected error occurred",
+      charged: false
+    })
+  }
+}
+
+/**
+ * EARNINGS & CLAIM ENDPOINTS (Merkle Distribution)
+ * NOTE: Must be defined before catch-all /api/:serverSlug/:apiSlug route
+ */
+
+/**
+ * GET /api/earnings/:serverSlug/:userAddress - Get user earnings for a specific server
+ */
+app.get('/api/earnings/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
+
+  try {
+    if (!earningsService || !tokenService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    // Get token DB entry for bonding progress
+    const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
+    const virtualDistributed = BigInt(tokenDBEntry?.virtualTokensDistributed || "0")
+    // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+    const testThresholdEarnings = process.env.TEST_GRADUATION_THRESHOLD
+    const graduationThreshold = testThresholdEarnings ? BigInt(testThresholdEarnings) : BigInt("625000000000000000000000000")
+    const bondingProgress = graduationThreshold > 0n
+      ? Number((virtualDistributed * 10000n) / graduationThreshold) / 100
+      : 0
+    const isGraduated = tokenDBEntry?.graduated === true
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      totalTokensEarned: earning?.totalTokensEarned || "0",
+      totalFeesPaid: earning?.totalFeesPaid || "0",
+      callCount: earning?.callCount || "0",
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+      bondingProgress: Math.min(bondingProgress, 100),
+      isGraduated,
+    })
+  } catch (error: any) {
+    console.error("Error fetching earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/earnings/:serverSlug - Get all earnings for a server
+ */
+app.get('/api/earnings/:serverSlug', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+
+  try {
+    if (!earningsService || !tokenService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenEntry.id)
+    const tokenDBEntry = await tokenService.getItem(tokenEntry.id)
+    const totalVirtualDistributed = tokenDBEntry?.virtualTokensDistributed || "0"
+    // Use TEST_GRADUATION_THRESHOLD for testing with small amounts
+    const testThresholdAll = process.env.TEST_GRADUATION_THRESHOLD
+    const graduationThreshold = testThresholdAll || "625000000000000000000000000"
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      users: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+        totalFeesPaid: e.totalFeesPaid,
+        callCount: e.callCount,
+        claimed: e.claimed,
+      })),
+      totalVirtualDistributed,
+      graduationThreshold,
+    })
+  } catch (error: any) {
+    console.error("Error fetching all earnings:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * GET /api/claim/:serverSlug/:userAddress - Get Merkle proof for claiming tokens (post-graduation)
+ */
+app.get('/api/claim/:serverSlug/:userAddress', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
+
+  try {
+    if (!merkleTreeService || !earningsService) {
+      return res.status(503).json({ error: "Merkle tree service not initialized" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found", message: `No server registered with slug "${serverSlug}"` })
+    }
+
+    // Check if token has graduated
+    const tokenDBEntry = tokenService ? await tokenService.getItem(tokenEntry.id) : null
+    if (!tokenDBEntry?.graduated) {
+      return res.status(400).json({
+        error: "Token not graduated",
+        message: "Merkle claims are only available after graduation. Bonding curve is still active.",
+      })
+    }
+
+    // Get Merkle proof
+    const proofData = await merkleTreeService.generateProof(tokenEntry.id, userAddress)
+    if (!proofData) {
+      return res.status(404).json({
+        error: "No claim found",
+        message: `No token earnings found for ${userAddress} on ${serverSlug}`,
+      })
+    }
+
+    // Check if already claimed
+    const earning = await earningsService.getEarning(tokenEntry.id, userAddress)
+
+    return res.status(200).json({
+      success: true,
+      serverSlug,
+      userAddress,
+      amount: proofData.amount,
+      proof: proofData.proof,
+      merkleRoot: tokenDBEntry.merkleRoot || "",
+      index: proofData.index,
+      claimed: earning?.claimed || false,
+      claimTxHash: earning?.claimTxHash || null,
+    })
+  } catch (error: any) {
+    console.error("Error fetching claim data:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * POST /api/claim/:serverSlug/:userAddress/confirm - Confirm a claim transaction
+ */
+app.post('/api/claim/:serverSlug/:userAddress/confirm', async (req, res) => {
+  const serverSlug = req.params.serverSlug.toLowerCase()
+  const userAddress = normalizeAddress(req.params.userAddress)
+  const { txHash } = req.body
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: "Earnings service not initialized" })
+    }
+
+    if (!txHash) {
+      return res.status(400).json({ error: "Missing txHash in request body" })
+    }
+
+    const tokenEntry = await getIAOTokenEntryBySlug(serverSlug)
+    if (!tokenEntry) {
+      return res.status(404).json({ error: "Server not found" })
+    }
+
+    await earningsService.markAsClaimed(tokenEntry.id, userAddress, txHash)
+
+    return res.status(200).json({
+      success: true,
+      message: "Claim confirmed",
+      txHash,
+    })
+  } catch (error: any) {
+    console.error("Error confirming claim:", error)
+    return res.status(500).json({ error: "Internal server error", message: error.message })
+  }
+})
+
+/**
+ * AGENT ENDPOINTS
+ * NOTE: Must be defined before catch-all /api/:serverSlug/:apiSlug route
+ */
+
+// POST /api/agents - Create a new agent
+app.post('/api/agents', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const { name, description, systemInstructions, creator, llmProvider, availableTools, starterPrompts, isPublic } = req.body
+
+    // Validation
+    if (!name || !description || !creator || !llmProvider || !availableTools || !starterPrompts) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        required: ["name", "description", "creator", "llmProvider", "availableTools", "starterPrompts"]
+      })
+    }
+
+    if (!['claude', 'gpt', 'gemini'].includes(llmProvider)) {
+      return res.status(400).json({
+        error: "Invalid llmProvider. Must be one of: claude, gpt, gemini"
+      })
+    }
+
+    if (!Array.isArray(availableTools) || availableTools.length === 0) {
+      return res.status(400).json({
+        error: "availableTools must be a non-empty array"
+      })
+    }
+
+    if (!Array.isArray(starterPrompts) || starterPrompts.length === 0) {
+      return res.status(400).json({
+        error: "starterPrompts must be a non-empty array"
+      })
+    }
+
+    // Validate systemInstructions if provided (optional, max 2000 chars)
+    if (systemInstructions && typeof systemInstructions === 'string' && systemInstructions.length > 2000) {
+      return res.status(400).json({
+        error: "systemInstructions must be 2000 characters or less"
+      })
+    }
+
+    const params: CreateAgentParams = {
+      name,
+      description,
+      systemInstructions: systemInstructions?.trim() || undefined,
+      creator,
+      llmProvider,
+      availableTools,
+      starterPrompts,
+      isPublic: isPublic !== false
+    }
+
+    const agent = await agentService.createAgent(params)
+
+    return res.status(201).json({
+      success: true,
+      message: "Agent created successfully",
+      data: agent
+    })
+  } catch (error: any) {
+    console.error("Error creating agent:", error)
+    return res.status(500).json({
+      error: "Failed to create agent",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/agents - List all public agents
+// Supports ?chainType=solana or ?chainType=evm filter
+app.get('/api/agents', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const chainType = req.query.chainType as string | undefined
+
+    let serverSlugsForChainType: string[] | undefined
+
+    // If chainType filter is specified, get all servers matching that chainType
+    if (chainType && tokenService) {
+      const allServers = await tokenService.listAll()
+      const solanaChainIds = ['devnet', 'mainnet-beta', 'testnet']
+
+      serverSlugsForChainType = allServers
+        .filter(server => {
+          const serverChainType = (server as any).chainType as string | undefined
+          if (chainType === 'solana') {
+            return serverChainType === 'solana' || solanaChainIds.includes(server.chainId)
+          } else if (chainType === 'evm') {
+            return serverChainType === 'evm' || !solanaChainIds.includes(server.chainId)
+          }
+          return true
+        })
+        .map(server => server.slug)
+    }
+
+    const agents = await agentService.listAgents({
+      isPublic: true,
+      chainType,
+      serverSlugsForChainType,
+    })
+
+    return res.json({
+      success: true,
+      count: agents.length,
+      data: agents
+    })
+  } catch (error: any) {
+    console.error("Error listing agents:", error)
+    return res.status(500).json({
+      error: "Failed to list agents",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/agents/:id - Get agent details
+app.get('/api/agents/:id', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const agent = await agentService.getAgent(req.params.id)
+
+    if (!agent) {
+      return res.status(404).json({
+        error: "Agent not found"
+      })
+    }
+
+    return res.json({
+      success: true,
+      data: agent
+    })
+  } catch (error: any) {
+    console.error("Error getting agent:", error)
+    return res.status(500).json({
+      error: "Failed to get agent",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/agents/my - Get user's agents (by creator wallet)
+app.get('/api/agents/my', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const creator = req.query.creator as string
+
+    if (!creator) {
+      return res.status(400).json({
+        error: "creator query parameter required"
+      })
+    }
+
+    const agents = await agentService.getAgentsByCreator(creator)
+
+    return res.json({
+      success: true,
+      creator,
+      count: agents.length,
+      data: agents
+    })
+  } catch (error: any) {
+    console.error("Error getting user agents:", error)
+    return res.status(500).json({
+      error: "Failed to get user agents",
+      message: error.message
+    })
+  }
+})
+
+// PUT /api/agents/:id - Update agent (creator only)
+app.put('/api/agents/:id', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const { id } = req.params
+    const creator = req.query.creator as string
+
+    if (!creator) {
+      return res.status(400).json({
+        error: "creator query parameter required"
+      })
+    }
+
+    // Verify ownership
+    const agent = await agentService.getAgent(id)
+    if (!agent) {
+      return res.status(404).json({ error: "Agent not found" })
+    }
+    if (normalizeAddress(agent.creator) !== normalizeAddress(creator)) {
+      return res.status(403).json({
+        error: "Unauthorized: Only agent creator can update"
+      })
+    }
+
+    const updates = req.body
+    const updatedAgent = await agentService.updateAgent(id, updates)
+
+    return res.json({
+      success: true,
+      message: "Agent updated successfully",
+      data: updatedAgent
+    })
+  } catch (error: any) {
+    console.error("Error updating agent:", error)
+    return res.status(500).json({
+      error: "Failed to update agent",
+      message: error.message
+    })
+  }
+})
+
+// DELETE /api/agents/:id - Delete agent (creator only)
+app.delete('/api/agents/:id', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const { id } = req.params
+    const creator = req.query.creator as string
+
+    if (!creator) {
+      return res.status(400).json({
+        error: "creator query parameter required"
+      })
+    }
+
+    await agentService.deleteAgent(id, creator)
+
+    return res.json({
+      success: true,
+      message: "Agent deleted successfully"
+    })
+  } catch (error: any) {
+    console.error("Error deleting agent:", error)
+    return res.status(500).json({
+      error: "Failed to delete agent",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/agents/:id/metrics - Get agent metrics
+app.get('/api/agents/:id/metrics', async (req, res) => {
+  try {
+    if (!agentService) {
+      return res.status(503).json({ error: "Agent service not initialized" })
+    }
+
+    const metrics = await agentService.getAgentMetrics(req.params.id)
+
+    if (!metrics) {
+      return res.status(404).json({
+        error: "Agent not found"
+      })
+    }
+
+    return res.json({
+      success: true,
+      data: metrics
+    })
+  } catch (error: any) {
+    console.error("Error getting agent metrics:", error)
+    return res.status(500).json({
+      error: "Failed to get agent metrics",
+      message: error.message
+    })
+  }
+})
+
+/**
+ * CHAT ENDPOINTS
+ */
+
+// POST /api/chat/sessions - Get or create a chat session
+app.post('/api/chat/sessions', async (req, res) => {
+  try {
+    if (!chatSessionService) {
+      return res.status(503).json({ error: "Chat service not initialized" })
+    }
+
+    const { agentId, userAddress, forceNew } = req.body
+
+    if (!agentId || !userAddress) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        required: ["agentId", "userAddress"]
+      })
+    }
+
+    let session
+    if (forceNew) {
+      // Force create a new session (for "New Chat" button)
+      session = await chatSessionService.createNewSession(agentId, userAddress)
+    } else {
+      session = await chatSessionService.getOrCreateSession(agentId, userAddress)
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: session
+    })
+  } catch (error: any) {
+    console.error("Error creating chat session:", error)
+    return res.status(500).json({
+      error: "Failed to create chat session",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/chat/sessions/user/:userAddress - Get all sessions for a user (optionally filtered by agent)
+app.get('/api/chat/sessions/user/:userAddress', async (req, res) => {
+  try {
+    if (!chatSessionService) {
+      return res.status(503).json({ error: "Chat service not initialized" })
+    }
+
+    const { userAddress } = req.params
+    const { agentId } = req.query
+
+    const sessions = await chatSessionService.getUserSessions(userAddress)
+
+    // Filter by agent if specified
+    const filteredSessions = agentId
+      ? sessions.filter(s => s.agentId === agentId)
+      : sessions
+
+    // Sort by lastMessageAt descending (most recent first)
+    filteredSessions.sort((a, b) =>
+      new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    )
+
+    return res.status(200).json({
+      success: true,
+      data: filteredSessions
+    })
+  } catch (error: any) {
+    console.error("Error getting user sessions:", error)
+    return res.status(500).json({
+      error: "Failed to get user sessions",
+      message: error.message
+    })
+  }
+})
+
+// GET /api/chat/sessions/:id/messages - Get message history
+app.get('/api/chat/sessions/:id/messages', async (req, res) => {
+  try {
+    if (!chatSessionService) {
+      return res.status(503).json({ error: "Chat service not initialized" })
+    }
+
+    const limit = parseInt(req.query.limit as string) || 100
+    const messages = await chatSessionService.getRecentMessages(req.params.id, limit)
+
+    return res.json({
+      success: true,
+      count: messages.length,
+      data: messages
+    })
+  } catch (error: any) {
+    console.error("Error getting messages:", error)
+    return res.status(500).json({
+      error: "Failed to get messages",
+      message: error.message
+    })
+  }
+})
+
+// POST /api/chat/message - Send a chat message
+app.post('/api/chat/message', async (req, res) => {
+  try {
+    if (!chatSessionService) {
+      return res.status(503).json({ error: "Chat service not initialized" })
+    }
+
+    const { sessionId, content } = req.body
+
+    if (!sessionId || !content) {
+      return res.status(400).json({
+        error: "Missing required fields",
+        required: ["sessionId", "content"]
+      })
+    }
+
+    // Save user message
+    const saveResult = await chatSessionService.saveMessage(
+      sessionId,
+      'user',
+      content
+    )
+
+    return res.status(201).json({
+      success: true,
+      message: "Message received. Streaming response...",
+      data: saveResult.message,
+      // Include images to store in IndexedDB if content had large images
+      imagesToStore: saveResult.imagesToStore
+    })
+  } catch (error: any) {
+    console.error("Error saving message:", error)
+    return res.status(500).json({
+      error: "Failed to save message",
+      message: error.message
+    })
+  }
+})
+
+// POST /api/chat/playground - Ephemeral chat without session persistence
+app.post('/api/chat/playground', async (req, res) => {
+  try {
+    const { message, model, tools: toolIds, conversationHistory, userAddress } = req.body
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" })
+    }
+
+    if (!toolIds || toolIds.length === 0) {
+      return res.status(400).json({ error: "At least one tool is required for playground chat" })
+    }
+
+    if (!llmService || !agentToolService) {
+      return res.status(503).json({ error: "Required services not initialized" })
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    const sendEvent = (type: string, data: any) => {
+      res.write(`data: ${JSON.stringify({ type, data })}\n\n`)
+    }
+
+    // Build tools from toolIds (format: "serverSlug/apiSlug")
+    const servers = await agentToolService.fetchAvailableServers()
+    const tools: any[] = []
+    // Map tool names back to original slugs for execution
+    const toolNameToSlugs: Record<string, { serverSlug: string; apiSlug: string }> = {}
+
+    for (const toolId of toolIds) {
+      const [serverSlug, apiSlug] = toolId.split('/')
+      const server = servers.find((s: any) => s.slug.toLowerCase() === serverSlug.toLowerCase())
+      if (!server) continue
+
+      const api = server.apis?.find((a: any) => a.slug.toLowerCase() === apiSlug.toLowerCase())
+      if (!api) continue
+
+      const toolName = `call_${serverSlug}_${apiSlug}`.replace(/-/g, '_').toLowerCase()
+
+      // Store mapping for later execution
+      toolNameToSlugs[toolName] = { serverSlug, apiSlug }
+
+      tools.push({
+        name: toolName,
+        description: `${api.name || api.slug} - ${api.description || 'No description'}. Fee: ${api.fee} wei`,
+        input_schema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
+            }
+          },
+          required: []
+        }
+      })
+    }
+
+    if (tools.length === 0) {
+      sendEvent('error', { message: 'No valid tools found for the selected APIs' })
+      res.end()
+      return
+    }
+
+    // Build conversation for LLM
+    const llmMessages = [
+      ...(conversationHistory || []).map((m: any) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content
+      })),
+      { role: 'user' as const, content: message }
+    ]
+
+    // System prompt for playground - concise and direct
+    const systemPrompt = `You are a helpful AI assistant testing decentralized APIs.
+
+You have access to these tools:
+${tools.map(t => `- ${t.name.replace('call_', '').replace(/_/g, ' ')}`).join('\n')}
+
+RULES:
+1. When users ask for data, CALL the appropriate tool immediately - don't explain what you'll do, just do it
+2. Keep responses SHORT and conversational - no lengthy explanations
+3. NEVER output raw XML, JSON, or function definitions to the user
+4. NEVER list tools with their technical names or schemas
+5. If a tool fails with 402 error, briefly explain the API requires payment
+6. Be natural - respond like a helpful assistant, not a technical manual
+7. For POST APIs (marked with [POST]): ALWAYS ask the user for the request body/payload BEFORE calling. Never send empty or made-up data.`
+
+    console.log(`🎮 Playground: Processing message with ${tools.length} tools`)
+    console.log(`🔧 Tools passed to LLM:`, tools.map(t => t.name))
+
+    // Create mock agent for tool execution
+    const mockAgent = {
+      id: 'playground',
+      name: 'Playground',
+      description: 'Playground agent',
+      creator: userAddress || 'anonymous',
+      llmProvider: model || 'claude',
+      availableTools: toolIds,
+      starterPrompts: [],
+      isPublic: false,
+      totalMessages: 0,
+      totalUsers: 0,
+      totalToolCalls: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+
+    // Agentic loop - max 5 iterations
+    let currentMessages = llmMessages
+    let iterationCount = 0
+    const maxIterations = 5
+
+    while (iterationCount < maxIterations) {
+      iterationCount++
+
+      // Use the async generator to stream responses
+      let responseContent = ''
+      const collectedToolCalls: any[] = []
+
+      for await (const chunk of llmService.streamChat(
+        (model as 'claude' | 'gpt' | 'gemini') || 'claude',
+        currentMessages,
+        tools,
+        systemPrompt
+      )) {
+        if (chunk.type === 'token') {
+          responseContent += chunk.content
+          sendEvent('token', { content: chunk.content })
+        } else if (chunk.type === 'tool_call') {
+          collectedToolCalls.push(chunk.tool)
+          sendEvent('tool_call', {
+            name: chunk.tool.name,
+            input: chunk.tool.input,
+            description: chunk.tool.name.replace('call_', '').replace(/_/g, ' ')
+          })
+        }
+      }
+
+      // If no tool calls, we're done
+      if (collectedToolCalls.length === 0) {
+        break
+      }
+
+      // For playground, send payment_option events and let frontend handle payment
+      // This matches how agent chat works - requires user to pay for API access
+      for (const toolCall of collectedToolCalls) {
+        const slugs = toolNameToSlugs[toolCall.name.toLowerCase()]
+        if (!slugs) {
+          sendEvent('error', { message: `Unknown tool: ${toolCall.name}` })
+          continue
+        }
+
+        const { serverSlug, apiSlug } = slugs
+        console.log(`💳 Playground: Sending payment option for ${toolCall.name} -> ${serverSlug}/${apiSlug}`)
+
+        try {
+          // Get API info for payment option
+          const apiInfo = await agentToolService.getApiInfo(serverSlug, apiSlug)
+
+          // Send payment option event to frontend (same format as agent chat)
+          sendEvent('payment_option', {
+            toolName: toolCall.name,
+            toolDisplayName: apiInfo.name,
+            serverSlug,
+            apiSlug,
+            fee: apiInfo.fee,
+            displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
+            tokenAddress: apiInfo.tokenAddress,
+            description: apiInfo.description,
+            method: apiInfo.method, // HTTP method (GET or POST)
+            input: toolCall.input // Include the tool input so frontend can use it
+          })
+
+          console.log(`💳 Payment option sent for ${toolCall.name}: ${apiInfo.name} (${AgentPaymentService.formatFeeForDisplay(apiInfo.fee)})`)
+        } catch (error: any) {
+          console.error(`Failed to get API info for ${toolCall.name}:`, error)
+          sendEvent('error', { message: `Failed to get API info for ${toolCall.name}` })
+        }
+      }
+
+      // After sending payment options, end the stream
+      // Frontend will handle payment and submit results as new messages
+      sendEvent('done', { pendingPayments: true })
+      res.end()
+      return
+    }
+
+    sendEvent('done', {})
+    res.end()
+  } catch (error: any) {
+    console.error('Playground chat error:', error)
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'error', data: { message: error.message } })}\n\n`)
+      res.end()
+    } catch {
+      // Response already ended
+    }
+  }
+})
+
+// GET /api/chat/stream/:sessionId - SSE endpoint for streaming responses with agentic loop
+app.get('/api/chat/stream/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params
+
+    // Get optional tool/model overrides from query params
+    const toolsOverride = req.query.tools ? (req.query.tools as string).split(',') : null
+    const modelOverride = req.query.model as string | null
+
+    // Validate services
+    if (!chatSessionService || !agentService || !llmService || !agentToolService || !agentPaymentService) {
+      return res.status(503).json({ error: "Required services not initialized" })
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    /**
+     * Send an SSE event to the client
+     *
+     * Supported event types:
+     * - 'text': Text chunk from LLM response
+     * - 'payment_option': Tool requires payment, includes API info and fee
+     * - 'tool_start': Tool execution is starting
+     * - 'tool_result': Tool execution completed with result
+     * - 'async_status': Status update for async/long-running operations
+     *   - data.status: 'started' | 'polling' | 'completed' | 'failed'
+     *   - data.toolName: Name of the async tool
+     *   - data.message: Human-readable status message
+     *   - data.estimatedTime: (optional) Estimated seconds remaining
+     * - 'error': Error occurred
+     * - 'warning': Non-fatal warning
+     * - 'end': Stream completed
+     */
+    const sendEvent = (type: string, data: any) => {
+      res.write(`data: ${JSON.stringify({ type, data })}\n\n`)
+    }
+
+    // Helper to send async operation status updates
+    // Used when an API returns 202 and requires polling
+    const sendAsyncStatus = (status: 'started' | 'polling' | 'completed' | 'failed', toolName: string, message: string, estimatedTime?: number) => {
+      sendEvent('async_status', {
+        status,
+        toolName,
+        message,
+        estimatedTime,
+        timestamp: new Date().toISOString()
+      })
+    }
+
+    // Step 1: Get the session
+    const session = await chatSessionService.getSession(sessionId)
+    if (!session) {
+      sendEvent('error', { message: 'Session not found' })
+      res.end()
+      return
+    }
+
+    // Step 2: Get the agent
+    const agent = await agentService.getAgent(session.agentId)
+    if (!agent) {
+      sendEvent('error', { message: 'Agent not found' })
+      res.end()
+      return
+    }
+
+    // Step 3: Get recent messages (conversation history)
+    // Keep last 100 messages for better context (previously was 20)
+    const messages = await chatSessionService.getRecentMessages(sessionId, 100)
+
+    console.log(`📨 Loaded ${messages.length} messages from session`)
+
+    // Convert to LLM format (filter out system messages, keep only user/assistant)
+    // IMPORTANT: Sanitize "Payment successful!" messages to prevent LLM from
+    // learning to fabricate API results without actually calling tools.
+    // These messages come from the frontend after a payment+API call cycle.
+    let llmMessages = messages
+      .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+      .map(msg => {
+        // Rewrite payment result messages so LLM doesn't mimic the pattern
+        if (msg.role === 'user' && msg.content?.includes('Payment successful!')) {
+          return {
+            role: 'user' as const,
+            content: msg.content.replace(
+              /Payment successful![^{]*/i,
+              '[SYSTEM: Tool was executed after user payment. Result data:] '
+            )
+          }
+        }
+        return {
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content
+        }
+      })
+
+    // Determine effective model (use override if provided)
+    const effectiveModel = modelOverride || agent.llmProvider
+    console.log(`🤖 Using model: ${effectiveModel}${modelOverride ? ' (overridden from frontend)' : ''}`)
+
+    // For Haiku (8k context), limit to last 15 messages to avoid token overflow
+    // System prompt + tools + many messages can exceed context window
+    if (effectiveModel === 'claude' && llmMessages.length > 15) {
+      console.warn(`⚠️  Truncating ${llmMessages.length} messages to 15 for Haiku token limit`)
+      llmMessages = llmMessages.slice(-15)
+    }
+
+    console.log(`📊 Sending ${llmMessages.length} messages to LLM for context`)
+
+    // Check if last message contains API result from payment
+    const lastMessage = messages[messages.length - 1]
+    const isPaymentResult = lastMessage?.content?.includes('Payment successful!')
+
+    // Step 4: Get tools - use override if provided, otherwise use agent's default tools
+    let tools: any[] = []
+    try {
+      if (toolsOverride && toolsOverride.length > 0) {
+        // Use overridden tools from query params
+        console.log(`🔧 Using tool overrides from frontend: ${toolsOverride.join(', ')}`)
+        const servers = await agentToolService.fetchAvailableServers()
+
+        for (const toolId of toolsOverride) {
+          const [serverSlug, apiSlug] = toolId.split('/')
+          if (!serverSlug || !apiSlug) continue
+
+          const server = servers.find((s: any) => s.slug.toLowerCase() === serverSlug.toLowerCase())
+          if (!server) continue
+
+          const api = server.apis?.find((a: any) => a.slug.toLowerCase() === apiSlug.toLowerCase())
+          if (!api) continue
+
+          const toolName = `call_${serverSlug}_${apiSlug}`.replace(/-/g, '_').toLowerCase()
+          tools.push({
+            name: toolName,
+            description: `${api.name || api.slug} - ${api.description || 'No description'}. Server: ${server.name}. Fee: ${api.fee} wei`,
+            input_schema: {
+              type: 'object',
+              properties: {
+                query: {
+                  type: 'string',
+                  description: 'Query parameters for the API call (e.g., "base=USD" or "latitude=52.52&longitude=13.41")'
+                }
+              },
+              required: []
+            },
+            // Store metadata for payment/execution
+            _meta: {
+              serverSlug: server.slug,
+              apiSlug: api.slug,
+              fee: api.fee,
+              tokenAddress: server.id  // server.id is the token address
+            }
+          })
+        }
+      } else {
+        // Use agent's default tools
+        tools = await agentToolService.getToolsForAgent(agent)
+      }
+    } catch (error) {
+      console.warn("Failed to load tools:", error)
+      sendEvent('warning', { message: 'Failed to load agent tools' })
+    }
+
+    // CRITICAL: Validate agent has at least one tool available
+    // Agents without tools cannot operate (tool-gating constraint)
+    if (tools.length === 0) {
+      console.warn(`❌ Agent ${agent.id} has no tools configured - cannot operate`)
+      sendEvent('error', {
+        message: 'This agent has no tools configured. Please contact the agent creator to add API access.'
+      })
+      res.end()
+      return
+    }
+
+    console.log(`✅ Agent ${agent.id} (${agent.name}) loaded with ${tools.length} tool(s)`)
+    console.log(`🔒 Tool-gating enabled: Agent can ONLY call these tools: ${tools.map(t => t.name).join(', ')}`)
+
+    // Step 5: System prompt for the agent
+    // Balance: Be conversational while offering specific API tools
+    let systemPrompt = `You are ${agent.name}, a helpful AI assistant with access to specialized decentralized APIs.
+
+📌 YOUR AVAILABLE TOOLS:
+${tools.length > 0 ? tools.map(t => {
+  // Extract clean info from description
+  const parts = t.description.split('.')
+  const cleanDesc = parts.find(p => !p.includes('Server:') && !p.includes('Fee:')) || t.description
+  return `• ${t.name.replace('call_', '').replace(/_/g, ' ')}: ${cleanDesc.trim()}`
+}).join('\n') : 'No tools available'}
+
+🎯 YOUR ROLE:
+- Be friendly, conversational, and helpful
+- You CAN greet users, chat casually, and be personable
+- Your PRIMARY purpose is to help users with your available APIs/tools
+- When users ask general knowledge questions, politely redirect them to what you CAN do
+- When a user's question relates to your tools, offer to help using those APIs
+- NEVER show raw function definitions, XML tags, or technical schemas to users
+- Present your capabilities in natural, user-friendly language
+
+💡 HOW TO USE YOUR TOOLS:
+- When a user asks something your API can help with, offer to fetch that data
+- Explain what the API does in simple terms
+- When you use a tool, the system will automatically show a payment button
+- After the user pays and you get the data, analyze and present it clearly
+
+📋 USING QUERY PARAMETERS (GET APIs):
+- Many APIs require query parameters (e.g., ?base=USD, ?latitude=52.52&longitude=13.41)
+- Check the tool's usage examples for required/optional parameters
+- Pass query params in the "query" field as a plain string (e.g., "base=USD" or "latitude=52.52&longitude=13.41")
+- If usage examples show URLs, extract just the query params after the "?"
+- When users ask questions, identify which query params to use from the context
+- If required params are missing, ASK the user for them before calling the tool
+
+⚠️ CRITICAL — USE THE USER'S ACTUAL VALUE, NOT THE EXAMPLE:
+- Parameter descriptions may show example values (e.g., "example.com", "USD", "52.52")
+- These are documentation examples ONLY — do NOT use them as the actual argument
+- ALWAYS extract the real value from what the user typed in their message
+- Example: user says "check google.com" → use domain="google.com", NOT "example.com"
+- Example: user says "convert JPY" → use base="JPY", NOT "USD"
+- If the user has not specified a required value, ASK them — never fall back to an example
+
+📮 USING POST APIs (CRITICAL):
+- Some tools are marked with [POST] in their description - these require a JSON request body
+- For POST APIs, you MUST ask the user what data they want to send BEFORE calling the tool
+- NEVER call a POST API with an empty body or made-up data
+- The "body" field is REQUIRED for POST APIs - always ask the user to provide it
+- Example: "This API requires a request body. What data would you like to send? Please provide it in JSON format, like: {\"key\": \"value\"}"
+
+EXAMPLE (GET):
+User: "What's the EUR to USD exchange rate?"
+You: [Call tool with query="base=EUR"] or ask "Which currency would you like to convert from?"
+
+EXAMPLE (POST):
+User: "Use the POST API"
+You: "This API requires a request body. What data would you like to send? Please provide it as JSON, for example: {\"title\": \"foo\", \"body\": \"bar\"}"
+
+🚫 WHAT NOT TO DO:
+- Don't show <functions>, <function>, or any XML/JSON to users
+- Don't answer general knowledge questions (history, science, trivia, advice, etc.)
+- Don't provide information that isn't directly from your API tools
+- Don't be rude when redirecting - be helpful and friendly
+
+⛔ CRITICAL - NEVER FABRICATE API RESULTS:
+- NEVER generate text like "Payment successful!" or pretend you already called an API
+- NEVER make up or invent API response data - you MUST call the tool to get real data
+- Even if conversation history shows previous API results, you MUST call the tool again for each new query
+- If you need data from an API, ALWAYS use the tool call - the system will handle payment automatically
+- If you respond without calling a tool, your answer will contain made-up data which is HARMFUL to users
+
+⛔ CRITICAL - RECOGNIZE WHEN AN API CALL FAILED OR RETURNED WRONG DATA:
+- If the tool result contains fields like "usage", "endpoint", "description" but NOT the actual requested data, the API call FAILED or was called with wrong parameters
+- Example of a FAILED response (api documentation, not real data): {"status":"ok","endpoint":"/ssl/v1/grade","description":"Get SSL security grade for a domain","usage":"GET /ssl/v1/grade?domain=example.com"}
+- When you receive this kind of documentation/metadata response, DO NOT present it as real results — instead, tell the user: "The API call did not return useful data. This may be because a required parameter was missing or incorrect."
+- NEVER say "The grade is A+" or summarize fake results from a documentation response
+- DO NOT call the same tool a second time hoping to get a different result — tell the user what went wrong instead
+
+⛔ CRITICAL - DO NOT CALL A TOOL BEFORE YOU HAVE ALL REQUIRED PARAMETERS:
+- Before calling any tool that has required parameters (e.g., domain, city, symbol), verify you have the actual value from the user's message
+- If the user says "check cloudflare.com", you have domain="cloudflare.com" — use it immediately in the tool call
+- NEVER call a tool first to "discover" how it works — the tool description already tells you what parameters are needed
+- One tool call per user request — do not call the same tool twice for the same question
+
+✨ EXAMPLE INTERACTIONS:
+
+GOOD - Greeting:
+User: "Hi!"
+You: "Hello! I'm ${agent.name}. ${agent.description || 'How can I help you today?'}"
+
+GOOD - Capabilities:
+User: "What can you do?"
+You: "I can help you with ${tools.length > 0 ? tools.map(t => t.name.replace('call_', '').replace(/_/g, ' ')).join(', ') : 'specialized data'}. What would you like to try?"
+
+GOOD - Tool-related question:
+User: [asks about your API]
+You: "Sure! Let me fetch that data for you." [Use the tool - payment button appears automatically]
+
+GOOD - Redirect general knowledge:
+User: "What is Darwin's theory?"
+You: "I'm focused on helping with specific APIs: ${tools.length > 0 ? tools.slice(0, 2).map(t => t.name.replace('call_', '').replace(/_/g, ' ')).join(', ') : 'specialized data'}. Is there anything I can help you with using these tools?"
+
+GOOD - Redirect but friendly:
+User: "How do I lose weight?"
+You: "That's not something I can help with - I specialize in ${tools.length > 0 ? tools[0].name.replace('call_', '').replace(/_/g, ' ') : 'API data'}. Would you like to try that instead?"
+
+Remember: Be friendly in greetings/small talk, but redirect non-API questions to your actual capabilities.`
+
+    // Add custom system instructions if provided by the agent creator
+    if (agent.systemInstructions) {
+      systemPrompt += `\n\n📋 ADDITIONAL INSTRUCTIONS FROM AGENT CREATOR:\n${agent.systemInstructions}`
+    }
+
+    // Add context if this is a response to payment result
+    if (isPaymentResult) {
+      systemPrompt += `\n\nThe user just paid for and received API data. Analyze the result and provide a helpful summary or insights.`
+    }
+
+    // Step 6: Stream LLM response with tool execution
+    let assistantMessage = ''
+    const toolCalls: Array<{ name: string; input: Record<string, any> }> = []
+    let hasError = false
+
+    try {
+      console.log(`🚀 Starting LLM stream with ${llmMessages.length} messages`)
+      console.log(`📝 System prompt length: ${systemPrompt.length} chars, ${Math.ceil(systemPrompt.length / 4)} tokens (estimated)`)
+      console.log(`🔧 Tools count: ${tools.length}`)
+
+      // Stream the LLM response using effective model (may be overridden)
+      for await (const chunk of llmService.streamChat(effectiveModel as 'claude' | 'gpt' | 'gemini', llmMessages, tools, systemPrompt)) {
+        if (chunk.type === 'token') {
+          // Stream text token to client
+          assistantMessage += chunk.content
+          sendEvent('token', { content: chunk.content })
+        } else if (chunk.type === 'tool_call') {
+          // Tool call requested by LLM - don't execute, send payment option instead
+          const toolCall = chunk.tool
+          toolCalls.push({
+            name: toolCall.name,
+            input: toolCall.input
+          })
+
+          // CRITICAL: Validate tool is in the active tool list (may be overridden)
+          // Use overridden tools if provided, otherwise use agent's default tools
+          const activeTools = toolsOverride || agent.availableTools
+          const hasAccess = activeTools.some(toolId => {
+            const [s, a] = toolId.split('/')
+            const generatedToolName = `call_${s}_${a}`.replace(/-/g, '_').toLowerCase()
+            return generatedToolName === toolCall.name.toLowerCase()
+          })
+
+          if (!hasAccess) {
+            console.warn(`⚠️  UNAUTHORIZED TOOL ACCESS: Agent ${agent.id} attempted to call ${toolCall.name}`)
+            sendEvent('error', {
+              message: `Access denied. This tool is not in the current active tool list.`
+            })
+            continue // Skip and continue
+          }
+
+          // Find which availableTools entry this tool_call corresponds to
+          // Can't just parse tool name because slugs may contain hyphens converted to underscores
+          let serverSlug = ''
+          let apiSlug = ''
+
+          for (const toolString of activeTools) {
+            const [s, a] = toolString.split('/')
+            const generatedToolName = `call_${s}_${a}`.replace(/-/g, '_').toLowerCase()
+            if (generatedToolName === toolCall.name.toLowerCase()) {
+              serverSlug = s
+              apiSlug = a
+              break
+            }
+          }
+
+          if (!serverSlug || !apiSlug) {
+            console.error(`Could not find server/API for tool: ${toolCall.name}`)
+            sendEvent('error', {
+              message: `Could not find API information for ${toolCall.name}`
+            })
+            continue
+          }
+
+          try {
+            // Get API info for payment option
+            const apiInfo = await agentToolService.getApiInfo(serverSlug, apiSlug)
+
+            // Send payment option event to frontend
+            sendEvent('payment_option', {
+              toolName: toolCall.name,
+              toolDisplayName: apiInfo.name,
+              serverSlug,
+              apiSlug,
+              fee: apiInfo.fee,
+              displayFee: AgentPaymentService.formatFeeForDisplay(apiInfo.fee),
+              tokenAddress: apiInfo.tokenAddress,
+              description: apiInfo.description,
+              method: apiInfo.method, // HTTP method (GET or POST)
+              input: toolCall.input // Include the tool input for POST body
+            })
+
+            console.log(`💳 Payment option sent for ${toolCall.name}: ${apiInfo.name} (${AgentPaymentService.formatFeeForDisplay(apiInfo.fee)})`)
+
+          } catch (error: any) {
+            console.error(`Failed to get API info for ${toolCall.name}:`, error)
+            sendEvent('error', {
+              message: `Failed to load payment option: ${error.message}`
+            })
+          }
+        } else if (chunk.type === 'done') {
+          // LLM streaming complete
+          sendEvent('done', { success: true })
+        }
+      }
+
+      console.log(`✅ LLM streaming completed. Assistant message length: ${assistantMessage.length}`)
+
+      // Anti-hallucination check: detect if LLM fabricated API results without making a tool call
+      if (toolCalls.length === 0 && !isPaymentResult) {
+        const fabricationPatterns = [
+          /payment successful/i,
+          /i'?ve queried the/i,
+          /here (?:are|is) the (?:result|data|response|classification)/i,
+          /API (?:returned|responded|result)/i,
+        ]
+        const hasFabricatedResult = fabricationPatterns.some(p => p.test(assistantMessage))
+        if (hasFabricatedResult) {
+          console.warn(`⚠️  HALLUCINATION DETECTED: Agent ${agent.id} (${agent.name}) generated API-result-like text without making a tool call`)
+          console.warn(`⚠️  Discarding fabricated response and prompting tool use`)
+          // Discard the fabricated message and send a corrective response
+          assistantMessage = `I need to use my API tool to get accurate data for you. Let me look that up now.`
+          hasError = false
+          // Note: The frontend should detect this pattern and re-trigger the stream
+          // For now, we replace the message to prevent bad data from being saved
+        }
+      }
+    } catch (streamError: any) {
+      console.error("❌ LLM streaming error:", streamError)
+      hasError = true
+      sendEvent('error', { message: streamError.message })
+    }
+
+    // Step 7: Save the assistant message to the session
+    if (!hasError && assistantMessage) {
+      try {
+        const saveResult = await chatSessionService.saveMessage(sessionId, 'assistant', assistantMessage)
+
+        // If there are images to store locally, send SSE event to frontend
+        if (saveResult.imagesToStore && saveResult.imagesToStore.length > 0) {
+          sendEvent('store_images', {
+            messageId: saveResult.message.id,
+            images: saveResult.imagesToStore
+          })
+          console.log(`📸 Sent ${saveResult.imagesToStore.length} image(s) to frontend for local storage`)
+        }
+
+        // Increment agent metrics
+        await agentService.incrementMetric(agent.id, 'totalMessages')
+        if (toolCalls.length > 0) {
+          await agentService.incrementMetric(agent.id, 'totalToolCalls')
+        }
+      } catch (saveError) {
+        console.error("Failed to save assistant message:", saveError)
+      }
+    }
+
+    // Step 8: Prune old messages (keep only last 100)
+    try {
+      await chatSessionService.pruneOldMessages(sessionId, 100)
+    } catch (pruneError) {
+      console.warn("Failed to prune old messages:", pruneError)
+    }
+
+    res.end()
+  } catch (error: any) {
+    console.error("Error in SSE stream:", error)
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`)
+    res.end()
+  }
+})
+
+/**
+ * INTERNAL: Fix token distribution model
+ * Temporary endpoint to fix tokens missing distributionModel field
+ */
+app.post('/internal/fix-distribution-model/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Token service not initialized' })
+    }
+
+    // normalizeAddress handles EVM lowercase vs Solana original case
+    const token = await tokenService.getItem(tokenAddress)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+
+    // Update the token with distributionModel
+    const updated = { ...token, distributionModel: 'merkle', updatedAt: new Date().toISOString() }
+    await tokenService.putItem(updated)
+
+    console.log(`✅ Fixed distributionModel for ${tokenAddress}`)
+    return res.json({ success: true, tokenAddress, distributionModel: 'merkle' })
+  } catch (err: any) {
+    console.error(`❌ Error fixing distributionModel for ${tokenAddress}:`, err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * INTERNAL GRADUATION ENDPOINT
+ * Called by Cloud Tasks to build Merkle tree and trigger Cloud Function for on-chain graduation.
+ * Auth: X-Graduation-Secret header must match GRADUATION_INTERNAL_SECRET env var.
+ */
+app.post('/internal/graduate/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  console.log(`🎓 Graduation task received for ${tokenAddress}`)
+
+  try {
+    if (!tokenService || !earningsService || !merkleTreeService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    // Short-circuit if already graduated
+    const token = await tokenService.getItem(tokenAddress)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+    if (token.graduated) {
+      console.log(`✅ Token ${tokenAddress} already graduated, skipping`)
+      return res.status(200).json({ status: 'already_graduated' })
+    }
+
+    // Acquire graduation lock (Layer 3)
+    const lockAcquired = await acquireGraduationLock(tokenAddress)
+    if (!lockAcquired) {
+      return res.status(409).json({ error: 'Graduation already in progress' })
+    }
+
+    try {
+      // Fetch all earnings for this token
+      const earnings = await earningsService.getEarningsByToken(tokenAddress)
+      if (earnings.length === 0) {
+        console.error(`❌ No earnings found for ${tokenAddress}`)
+        await releaseGraduationLock(tokenAddress)
+        return res.status(400).json({ error: 'No earnings data for tree generation' })
+      }
+
+      // Build Merkle tree from earnings
+      // Solana uses custom leaf hashing: keccak256(keccak256(pubkey_bytes || amount_u64_le))
+      // EVM uses StandardMerkleTree with ABI encoding
+      const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+      const isSolanaToken = solanaChains.includes(token.chainId)
+
+      let merkleRoot: string
+      let treeDump: string
+
+      if (isSolanaToken) {
+        // Solana Merkle tree — custom leaf hashing to match on-chain program
+        // IMPORTANT: Solana uses Keccak-256 (pre-NIST, same as Ethereum), NOT NIST SHA-3-256
+        const { keccak_256 } = await import('@noble/hashes/sha3')
+        const bs58 = (await import('bs58')).default
+
+        // Internal earnings are tracked in 18 decimals (EVM default).
+        // Solana tokens use 9 decimals, so divide by 10^9 for on-chain amounts.
+        const DECIMAL_SHIFT = BigInt(10 ** 9)
+        function toSolanaAmount(amount18: string): bigint {
+          return BigInt(amount18) / DECIMAL_SHIFT
+        }
+
+        // Hash leaf: keccak256(keccak256(pubkey_32bytes || amount_u64_le))
+        // Matches on-chain merkle_claim.rs verification
+        function hashLeaf(userAddress: string, solanaAmount: bigint): Buffer {
+          const pubkeyBytes = bs58.decode(userAddress)
+          const amountBuf = Buffer.alloc(8)
+          amountBuf.writeBigUInt64LE(solanaAmount)
+          const leafData = Buffer.concat([Buffer.from(pubkeyBytes), amountBuf])
+          const innerHash = keccak_256(leafData)
+          return Buffer.from(keccak_256(innerHash))
+        }
+
+        function keccak256Combine(left: Buffer, right: Buffer): Buffer {
+          const combined = Buffer.compare(left, right) <= 0
+            ? Buffer.concat([left, right])
+            : Buffer.concat([right, left])
+          return Buffer.from(keccak_256(combined))
+        }
+
+        // Sort leaves for deterministic tree
+        const sortedLeaves = earnings.map(e => {
+          const solanaAmount = toSolanaAmount(e.totalTokensEarned)
+          return {
+            address: e.userAddress,
+            amount: solanaAmount.toString(),
+            hash: hashLeaf(e.userAddress, solanaAmount),
+          }
+        }).sort((a, b) => Buffer.compare(a.hash, b.hash))
+
+        // Build tree bottom-up
+        let currentLevel = sortedLeaves.map(l => l.hash)
+        const allLevels = [currentLevel]
+        while (currentLevel.length > 1) {
+          const nextLevel: Buffer[] = []
+          for (let i = 0; i < currentLevel.length; i += 2) {
+            if (i + 1 < currentLevel.length) {
+              nextLevel.push(keccak256Combine(currentLevel[i], currentLevel[i + 1]))
+            } else {
+              nextLevel.push(currentLevel[i]) // Odd node promoted
+            }
+          }
+          currentLevel = nextLevel
+          allLevels.push(currentLevel)
+        }
+
+        merkleRoot = '0x' + currentLevel[0].toString('hex')
+
+        // Build proofs for each leaf
+        const proofs: { [address: string]: string[] } = {}
+        for (let leafIdx = 0; leafIdx < sortedLeaves.length; leafIdx++) {
+          const proof: string[] = []
+          let idx = leafIdx
+          for (let level = 0; level < allLevels.length - 1; level++) {
+            const siblingIdx = idx % 2 === 0 ? idx + 1 : idx - 1
+            if (siblingIdx < allLevels[level].length) {
+              proof.push('0x' + allLevels[level][siblingIdx].toString('hex'))
+            }
+            idx = Math.floor(idx / 2)
+          }
+          proofs[sortedLeaves[leafIdx].address] = proof
+        }
+
+        treeDump = JSON.stringify({
+          format: 'solana-keccak256',
+          root: merkleRoot,
+          leaves: sortedLeaves.map((l, i) => ({
+            address: l.address,
+            amount: l.amount, // Already converted to 9-decimal Solana format
+            hash: '0x' + l.hash.toString('hex'),
+            proof: proofs[l.address],
+          })),
+        })
+      } else {
+        // EVM Merkle tree — OpenZeppelin StandardMerkleTree
+        const { StandardMerkleTree } = await import('@openzeppelin/merkle-tree')
+        const leaves: [string, string][] = earnings.map(e => [e.userAddress, e.totalTokensEarned])
+        const tree = StandardMerkleTree.of(leaves, ['address', 'uint256'])
+        merkleRoot = tree.root
+        treeDump = JSON.stringify(tree.dump())
+      }
+
+      console.log(`🌳 Merkle tree built for ${tokenAddress}: ${earnings.length} leaves, root: ${merkleRoot}`)
+
+      // Store Merkle tree in Firestore
+      // For Solana, convert amounts from 18-decimal (internal) to 9-decimal (on-chain)
+      const SOLANA_SHIFT = BigInt(10 ** 9)
+      const totalTokens18 = earnings.reduce(
+        (sum, e) => sum + BigInt(e.totalTokensEarned),
+        BigInt(0)
+      )
+      const totalTokens = isSolanaToken
+        ? (totalTokens18 / SOLANA_SHIFT).toString()
+        : totalTokens18.toString()
+
+      await merkleTreeService.storeMerkleTree(tokenAddress, {
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+        leaves: earnings.map((e, i) => ({
+          address: e.userAddress,
+          amount: isSolanaToken
+            ? (BigInt(e.totalTokensEarned) / SOLANA_SHIFT).toString()
+            : e.totalTokensEarned,
+          index: i,
+        })),
+        treeDump,
+        generatedAt: new Date().toISOString(),
+        chainId: token.chainId,
+      })
+
+      // Set merkleRoot on token entry (graduated stays false until Cloud Function confirms)
+      const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+        .collection('iao-tokens')
+        .doc(normalizeAddress(tokenAddress))
+      await docRef.update({
+        merkleRoot,
+        updatedAt: new Date().toISOString(),
+      })
+
+      // Notify Cloud Function for on-chain graduation TX
+      // For Solana, convert virtualDistributed from 18-decimal to 9-decimal (u64-safe)
+      const virtualDistributed = token.virtualTokensDistributed || "0"
+      const virtualDistributedForChain = isSolanaToken
+        ? (BigInt(virtualDistributed) / SOLANA_SHIFT).toString()
+        : virtualDistributed
+
+      await notifyForGraduation({
+        tokenAddress,
+        chainId: token.chainId,
+        merkleRoot,
+        virtualDistributed: virtualDistributedForChain,
+        totalFeesCollected: token.totalFeesCollected || "0",
+        serverSlug: token.slug,
+      })
+
+      await releaseGraduationLock(tokenAddress)
+
+      console.log(`✅ Graduation processing complete for ${tokenAddress}, Cloud Function notified`)
+      return res.status(200).json({
+        status: 'graduation_initiated',
+        merkleRoot,
+        totalLeaves: earnings.length,
+        totalTokens,
+      })
+    } catch (innerErr) {
+      // Release lock on failure so retries can proceed
+      await releaseGraduationLock(tokenAddress)
+      throw innerErr
+    }
+  } catch (error: any) {
+    console.error(`❌ Graduation processing failed for ${tokenAddress}:`, error)
+    // Return 500 so Cloud Tasks retries
+    return res.status(500).json({ error: 'Graduation processing failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION CALLBACK ENDPOINT
+ * Called by Cloud Function after on-chain graduation TX succeeds to set graduated=true.
+ */
+app.post('/internal/graduation-confirm/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const { txHash } = req.body || {}
+
+    const docRef = (await import('./db/firestoreClient.js')).getFirestoreClient()
+      .collection('iao-tokens')
+      .doc(normalizeAddress(tokenAddress))
+
+    await docRef.update({
+      graduated: true,
+      updatedAt: new Date().toISOString(),
+    })
+
+    // Update merkle tree with on-chain tx hash if provided (non-fatal if doc doesn't exist)
+    if (txHash && merkleTreeService) {
+      try {
+        await merkleTreeService.setOnChainTxHash(tokenAddress, txHash)
+      } catch (merkleErr: any) {
+        console.warn(`⚠️  Could not update merkle tree tx hash for ${tokenAddress}:`, merkleErr.message)
+      }
+    }
+
+    console.log(`✅ Graduation confirmed for ${tokenAddress} (tx: ${txHash || 'unknown'})`)
+    return res.status(200).json({ status: 'confirmed' })
+  } catch (error: any) {
+    console.error(`❌ Graduation confirmation failed for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Confirmation failed', message: error.message })
+  }
+})
+
+/**
+ * GRADUATION EARNINGS ENDPOINT
+ * Called by Solana Cloud Function to fetch earnings breakdown for batch_mint.
+ */
+app.get('/internal/graduation-earnings/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!earningsService) {
+      return res.status(503).json({ error: 'Earnings service not initialized' })
+    }
+
+    const earnings = await earningsService.getEarningsByToken(tokenAddress)
+    return res.status(200).json({
+      earnings: earnings.map(e => ({
+        userAddress: e.userAddress,
+        totalTokensEarned: e.totalTokensEarned,
+      })),
+    })
+  } catch (error: any) {
+    console.error(`❌ Failed to fetch graduation earnings for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Failed to fetch earnings', message: error.message })
+  }
+})
+
+/**
+ * DEV: Seed test data for graduation testing
+ * Only works with internal secret authentication
+ */
+app.post('/internal/seed-test-data/:tokenAddress', async (req, res) => {
+  const { tokenAddress } = req.params
+
+  // Auth check
+  const internalSecret = process.env.GRADUATION_INTERNAL_SECRET
+  if (internalSecret && req.headers['x-graduation-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService || !earningsService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const { userAddress, tokensEarned, feePaid, virtualDistributed, totalFeesCollected } = req.body
+
+    if (!userAddress || !tokensEarned) {
+      return res.status(400).json({ error: 'userAddress and tokensEarned are required' })
+    }
+
+    const normalizedToken = normalizeAddress(tokenAddress)
+    const normalizedUser = normalizeAddress(userAddress)
+
+    // Get token to verify it exists
+    const token = await tokenService.getItem(normalizedToken)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' })
+    }
+
+    // Update token's virtualTokensDistributed and totalFeesCollected if provided
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    const tokenDocRef = db.collection('iao-tokens').doc(normalizedToken)
+
+    const tokenUpdates: any = { updatedAt: new Date().toISOString() }
+    if (virtualDistributed) {
+      tokenUpdates.virtualTokensDistributed = virtualDistributed
+    }
+    if (totalFeesCollected) {
+      tokenUpdates.totalFeesCollected = totalFeesCollected
+    }
+    await tokenDocRef.update(tokenUpdates)
+
+    // Add earnings entry
+    const earningsDocId = `${normalizedToken}#${normalizedUser}`
+    const earningsDocRef = db.collection('token-earnings').doc(earningsDocId)
+    const now = new Date().toISOString()
+
+    await earningsDocRef.set({
+      id: earningsDocId,
+      tokenAddress: normalizedToken,
+      userAddress: normalizedUser,
+      totalTokensEarned: tokensEarned,
+      totalFeesPaid: feePaid || '0',
+      callCount: '1',
+      lastEarnedAt: now,
+      claimed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    console.log(`🧪 Test data seeded for ${tokenAddress}: user=${userAddress}, tokens=${tokensEarned}`)
+
+    return res.status(200).json({
+      success: true,
+      tokenAddress: normalizedToken,
+      userAddress: normalizedUser,
+      tokensEarned,
+      virtualDistributed: virtualDistributed || token.virtualTokensDistributed,
+      totalFeesCollected: totalFeesCollected || token.totalFeesCollected,
+    })
+  } catch (error: any) {
+    console.error(`❌ Failed to seed test data for ${tokenAddress}:`, error)
+    return res.status(500).json({ error: 'Failed to seed test data', message: error.message })
+  }
+})
+
+/**
+ * WEEKLY FEE DISTRIBUTION ENDPOINT
+ * Triggered by Cloud Scheduler to distribute accumulated fees to builders and team.
+ * Gets all non-graduated tokens with pending fees and calls the appropriate
+ * fee-distribution Cloud Function (EVM or Solana) based on each token's chainId.
+ */
+app.post('/internal/trigger-fee-distribution', async (req, res) => {
+  const internalSecret = process.env.FEE_DISTRIBUTION_SECRET
+  if (internalSecret && req.headers['x-fee-distribution-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    if (!tokenService) {
+      return res.status(503).json({ error: 'Services not initialized' })
+    }
+
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+
+    // Get all non-graduated tokens with pending fees
+    const tokensSnapshot = await db.collection('iao-tokens')
+      .where('graduated', '==', false)
+      .get()
+
+    const solanaChains = ['devnet', 'mainnet-beta', 'testnet']
+    const evmTokens: Array<{ tokenAddress: string; pendingFees: string }> = []
+    const solanaTokens: Array<{ tokenAddress: string; pendingFees: string }> = []
+
+    for (const doc of tokensSnapshot.docs) {
+      const token = doc.data()
+      const pendingFees = token.pendingFeesForDistribution || '0'
+      if (BigInt(pendingFees) > 0n) {
+        const entry = { tokenAddress: doc.id, pendingFees }
+        if (solanaChains.includes(token.chainId)) {
+          solanaTokens.push(entry)
+        } else {
+          evmTokens.push(entry)
+        }
+      }
+    }
+
+    const totalCount = evmTokens.length + solanaTokens.length
+    if (totalCount === 0) {
+      console.log('No tokens with pending fees for distribution')
+      return res.status(200).json({
+        status: 'no_pending_fees',
+        message: 'No tokens have pending fees',
+      })
+    }
+
+    console.log(`Found ${totalCount} tokens with pending fees (EVM: ${evmTokens.length}, Solana: ${solanaTokens.length})`)
+
+    const results: Array<{ chain: string; result?: any; error?: string }> = []
+
+    // Helper to call a fee distribution Cloud Function
+    const callFeeDistribution = async (url: string, tokens: typeof evmTokens, chain: string) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(internalSecret ? { 'X-Fee-Distribution-Secret': internalSecret } : {}),
+        },
+        body: JSON.stringify({ action: 'distribute-fees', tokens }),
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`${chain} Cloud Function failed: ${response.status} ${errorText}`)
+      }
+      return await response.json()
+    }
+
+    // Dispatch EVM tokens
+    if (evmTokens.length > 0) {
+      const evmUrl = process.env.FEE_DISTRIBUTION_FUNCTION_EVM_URL || process.env.FEE_DISTRIBUTION_FUNCTION_URL
+      if (!evmUrl) {
+        console.error('No EVM fee distribution function URL configured')
+        results.push({ chain: 'evm', error: 'No EVM fee distribution function URL configured' })
+      } else {
+        try {
+          const result = await callFeeDistribution(evmUrl, evmTokens, 'EVM')
+          console.log(`EVM fee distribution result: ${JSON.stringify(result)}`)
+          results.push({ chain: 'evm', result })
+        } catch (err: any) {
+          console.error(`EVM fee distribution failed: ${err.message}`)
+          results.push({ chain: 'evm', error: err.message })
+        }
+      }
+    }
+
+    // Dispatch Solana tokens
+    if (solanaTokens.length > 0) {
+      const solanaUrl = process.env.FEE_DISTRIBUTION_FUNCTION_SOLANA_URL
+      if (!solanaUrl) {
+        console.error('No Solana fee distribution function URL configured')
+        results.push({ chain: 'solana', error: 'No Solana fee distribution function URL configured' })
+      } else {
+        try {
+          const result = await callFeeDistribution(solanaUrl, solanaTokens, 'Solana')
+          console.log(`Solana fee distribution result: ${JSON.stringify(result)}`)
+          results.push({ chain: 'solana', result })
+        } catch (err: any) {
+          console.error(`Solana fee distribution failed: ${err.message}`)
+          results.push({ chain: 'solana', error: err.message })
+        }
+      }
+    }
+
+    const hasErrors = results.some(r => r.error)
+    return res.status(hasErrors ? 207 : 200).json({
+      status: 'distribution_initiated',
+      tokensCount: totalCount,
+      evmTokens: evmTokens.length,
+      solanaTokens: solanaTokens.length,
+      results,
+    })
+  } catch (error: any) {
+    console.error('Fee distribution trigger failed:', error)
+    return res.status(500).json({ error: 'Failed to trigger fee distribution', message: error.message })
+  }
+})
+
+/**
+ * FEE DISTRIBUTION CALLBACK ENDPOINT
+ * Called by Cloud Function after on-chain fee distribution TX succeeds.
+ * Clears pendingFeesForDistribution for processed tokens.
+ */
+app.post('/internal/fee-distribution-confirm', async (req, res) => {
+  const internalSecret = process.env.FEE_DISTRIBUTION_SECRET
+  if (internalSecret && req.headers['x-fee-distribution-secret'] !== internalSecret) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const { txHash, tokens, timestamp } = req.body || {}
+
+    if (!tokens || !Array.isArray(tokens)) {
+      return res.status(400).json({ error: 'Missing tokens array' })
+    }
+
+    const db = (await import('./db/firestoreClient.js')).getFirestoreClient()
+    const batch = db.batch()
+    const now = new Date().toISOString()
+
+    for (const tokenAddress of tokens) {
+      const docRef = db.collection('iao-tokens').doc(normalizeAddress(tokenAddress))
+      batch.update(docRef, {
+        pendingFeesForDistribution: '0',
+        lastFeeDistributionAt: timestamp || now,
+        lastFeeDistributionTxHash: txHash,
+        updatedAt: now,
+      })
+    }
+
+    await batch.commit()
+
+    console.log(`✅ Fee distribution confirmed for ${tokens.length} tokens (tx: ${txHash || 'unknown'})`)
+    return res.status(200).json({ status: 'confirmed', tokensUpdated: tokens.length })
+  } catch (error: any) {
+    console.error('❌ Fee distribution confirmation failed:', error)
+    return res.status(500).json({ error: 'Confirmation failed', message: error.message })
+  }
+})
+
+/**
+ * API PROXY ROUTES
+ * IMPORTANT: These wildcard routes MUST be defined AFTER all specific /api/* routes
+ * Otherwise they will catch requests meant for /api/chat/*, /api/agents/*, etc.
+ */
+
+// Handle GET requests for /api/:serverSlug/:apiSlug (slug-based routing)
+// Rate limiters: per-IP, per-wallet, per-API endpoint
+app.get('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
+// Handle POST requests for /api/:serverSlug/:apiSlug
+// Supports APIs that require JSON body input
+app.post('/api/:serverSlug/:apiSlug', ...apiProxyRateLimiters, async (req, res) => {
+  const serverSlug = (req.params.serverSlug as string).toLowerCase()
+  const apiSlug = (req.params.apiSlug as string).toLowerCase()
+
+  return handleApiProxyRequest(req, res, serverSlug, apiSlug)
+})
+
+// Start server if running directly (not in Vercel serverless)
+// In Cloud Run, we ARE in production and need to start the server
+const isVercelServerless = process.env.VERCEL === '1'
+if (!isVercelServerless) {
+  const PORT = process.env.PORT || 3000
+  app.listen(PORT, () => {
+    console.log(`🚀 Express server running on port ${PORT}`)
+    console.log(`📱 Base URL: http://localhost:${PORT}`)
+    console.log(`🔗 Network: Base Mainnet`)
+    console.log(`💰 Facilitator: x402.org (OpenFacilitator)`)
+    console.log(`\n📍 Available endpoints:`)
+    console.log(`   POST /api/register              - Register new server with APIs`)
+    console.log(`   POST /api/add-api               - Add API to existing server`)
+    console.log(`   GET /api/servers                - Get all registered servers`)
+    console.log(`   GET /api/server/:slug           - Get server metadata by slug`)
+    console.log(`   GET /api/:serverSlug/:apiSlug   - Proxy to specific API (e.g., /api/magpie/pool-snapshot)`)
+    console.log(`\n⚙️  Configuration:`)
+    console.log(`   - Set THIRDWEB_SECRET_KEY and THIRDWEB_SERVER_WALLET_ADDRESS for payment processing`)
+    console.log(`   - Set GCP_PROJECT_ID for IAO token storage (Firestore)`)
+    console.log(`   - Set BUILDER_SECRET_PHRASE for JWT authentication with builder endpoints`)
+  })
+}
+
+export default app
+

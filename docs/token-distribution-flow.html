@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Token Distribution Flow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: #0f172a;
+      min-height: 100vh;
+    }
+    body { padding: 32px; }
+    h1 {
+      color: #f87171;
+      text-align: center;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      margin-bottom: 32px;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+    .mermaid svg {
+      max-width: none !important;
+    }
+  </style>
+</head>
+<body>
+  <h1>Token Distribution Flow (Multi-Chain)</h1>
+  <div class="mermaid">
+flowchart TD
+    subgraph API["<b>API Payment (Common)</b>"]
+        A["User calls API<br/>POST /api/:slug/:api"] --> B["Backend verifies payment"]
+        B --> C["Forward to Builder API<br/>+ X-IAO-Auth JWT"]
+        C --> D{"Builder returns 2xx?"}
+    end
+
+    D -->|No| FAIL["Return error to user<br/>(no charge)"]
+
+    D -->|Yes| E{"Which chain?"}
+
+    subgraph EVM_DIST["<b>EVM Distribution (Base)</b>"]
+        E -->|EVM| G1["EIP-3009: settlePayment<br/>via Thirdweb facilitator"]
+        G1 --> G2["USDC transferred<br/>to IAOToken contract"]
+        G2 --> G3["Queue in request-queue<br/>(Firestore)"]
+        G3 --> G4["Automation polls queue"]
+        G4 --> G5["Batch by tokenAddress"]
+        G5 --> G6["batchMintWithVariableAmounts<br/>on-chain"]
+        G6 --> G7["Tokens minted<br/>to user immediately"]
+    end
+
+    subgraph SOL_DIST["<b>Solana Distribution</b>"]
+        E -->|Solana| S1["Submit signed SPL transfer<br/>sendRawTransaction"]
+        S1 --> S2["USDC deposited to<br/>program vault PDA"]
+        S2 --> S3["Calculate tokens earned:<br/>(fee * paymentTokenPrice)<br/>/ 10^paymentTokenDecimals"]
+        S3 --> S4["Atomic Firestore increment:<br/>virtualTokensDistributed<br/>+ user earnings (18 decimals)"]
+        S4 --> S5["Token earnings tracked<br/>per user in user-earnings"]
+    end
+
+    subgraph GRAD_CHECK["<b>Graduation Check</b>"]
+        G7 --> GC{"virtualDistributed<br/>>= threshold?"}
+        S5 --> GC
+        GC -->|No| GD["Continue bonding"]
+        GC -->|Yes| GE["<b>GRADUATE</b><br/>Dispatch Cloud Task"]
+    end
+
+    subgraph MERKLE["<b>Solana Token Claims (Post-Graduation)</b>"]
+        GE --> M1["Build Merkle tree<br/>Keccak-256 hashing"]
+        M1 --> M2["Convert 18 &rarr; 9 decimals"]
+        M2 --> M3["Set merkle root on-chain"]
+        M3 --> M4["Users claim tokens<br/>with Merkle proofs"]
+    end
+
+    subgraph FEES["<b>Fee Split (Both Chains)</b>"]
+        GD --> T["Pre-Grad: 40% builder<br/>10% team, 50% LP reserve"]
+        GE --> U["Post-Grad: 70% builder<br/>10% team, 20% buyback"]
+    end
+
+    style A fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style B fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style C fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style D fill:#d97706,stroke:#fbbf24,color:#fff
+    style FAIL fill:#dc2626,stroke:#f87171,color:#fff
+    style E fill:#d97706,stroke:#fbbf24,color:#fff
+
+    style G1 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G2 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G3 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G4 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G5 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G6 fill:#0891b2,stroke:#22d3ee,color:#fff
+    style G7 fill:#0891b2,stroke:#22d3ee,color:#fff
+
+    style S1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S4 fill:#9333ea,stroke:#c084fc,color:#fff
+    style S5 fill:#9333ea,stroke:#c084fc,color:#fff
+
+    style GC fill:#d97706,stroke:#fbbf24,color:#fff
+    style GD fill:#059669,stroke:#34d399,color:#fff
+    style GE fill:#dc2626,stroke:#f87171,color:#fff
+
+    style M1 fill:#9333ea,stroke:#c084fc,color:#fff
+    style M2 fill:#9333ea,stroke:#c084fc,color:#fff
+    style M3 fill:#9333ea,stroke:#c084fc,color:#fff
+    style M4 fill:#9333ea,stroke:#c084fc,color:#fff
+
+    style T fill:#ec4899,stroke:#f472b6,color:#fff
+    style U fill:#ec4899,stroke:#f472b6,color:#fff
+  </div>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      securityLevel: 'loose',
+      flowchart: {
+        useMaxWidth: false,
+        htmlLabels: true,
+        curve: 'basis'
+      },
+      themeVariables: {
+        primaryColor: '#7c3aed',
+        primaryTextColor: '#f1f5f9',
+        primaryBorderColor: '#a78bfa',
+        lineColor: '#94a3b8',
+        secondaryColor: '#1e293b',
+        background: '#0f172a',
+        mainBkg: '#1e293b',
+        nodeBorder: '#a78bfa',
+        clusterBkg: '#1e293b',
+        clusterBorder: '#475569',
+        titleColor: '#f87171',
+        edgeLabelBackground: '#0f172a',
+        fontFamily: 'Inter, Segoe UI, sans-serif'
+      }
+    });
+  </script>
+</body>
+</html>

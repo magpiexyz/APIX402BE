@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Server Token Creation Flow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: #0f172a; min-height: 100vh; }
+    body { padding: 32px; }
+    h1 {
+      color: #f87171;
+      text-align: center;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      margin-bottom: 32px;
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .mermaid { display: flex; justify-content: center; margin-bottom: 48px; }
+    .mermaid svg { max-width: none !important; }
+    .section-label {
+      color: #94a3b8;
+      text-align: center;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+      margin-top: 32px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Server Token Creation Flow (Multi-Chain)</h1>
+
+  <p class="section-label">EVM Flow (Base Sepolia)</p>
+  <div class="mermaid">
+sequenceDiagram
+    participant F as Frontend<br/>(React)
+    participant B as Backend<br/>(Cloud Run)
+    participant W as User Wallet
+    participant C as IAOTokenFactory<br/>(Base Sepolia)
+    participant T as IAOToken<br/>(New Clone)
+
+    F->>B: 1. POST /api/register (validate)<br/>chainId: "84532"
+    B->>B: 2. Validate slug, API URLs,<br/>builder 0x address
+    B-->>F: 3. Validation OK
+
+    F->>W: 4. Request signature
+    W->>C: 5. createToken(params)
+
+    Note over C: 6. Validations:<br/>- Payment token exists<br/>- Builder not zero<br/>- Slug unique
+
+    C->>C: 7. Calculate graduation<br/>threshold (625M tokens)
+
+    C->>T: 8. Clone + Initialize
+
+    Note over T: 9. Set params:<br/>- graduationThreshold<br/>- paymentToken<br/>- owner = builder
+
+    T->>T: 10. _mint(builder, 1B tokens)
+
+    C-->>C: 11. Store: _getToken[slug] = token
+    C-->>W: 12. emit TokenCreated()
+    W-->>F: 13. Return tokenAddress (0x...)
+
+    F->>B: 14. POST /api/register<br/>(with tokenAddress)
+    B->>B: 15. normalizeAddress(addr.toLowerCase())<br/>Store in Firestore iao-tokens
+    B-->>F: 16. Success
+  </div>
+
+  <p class="section-label">Solana Flow (Devnet / Mainnet)</p>
+  <div class="mermaid">
+sequenceDiagram
+    participant F as Frontend<br/>(React)
+    participant B as Backend<br/>(Cloud Run)
+    participant W as User Wallet<br/>(Phantom/Solflare)
+    participant P as IAO Program<br/>(Anchor)
+
+    F->>B: 1. POST /api/register (validate)<br/>chainId: "devnet", builder: base58
+    B->>B: 2. Validate slug, API URLs,<br/>builder base58 address format
+    B-->>F: 3. Validation OK
+
+    F->>W: 4. Request tx signature
+    W->>P: 5. initialize_token instruction
+
+    Note over P: 6. Derive PDAs:<br/>- Token State: [iao-token, slug]<br/>- Mint: [iao-mint, slug]<br/>- Vault: [iao-vault, slug]<br/>- Vault Authority: [vault-auth, slug]
+
+    P->>P: 7. Initialize token state<br/>(builder, graduationThreshold,<br/>paymentToken, feeConfig)
+
+    P->>P: 8. Create SPL mint (9 decimals)<br/>via Token-2022
+
+    P->>P: 9. Create vault ATA<br/>for USDC deposits
+
+    P-->>W: 10. Return mint PDA (base58)
+
+    F->>B: 11. POST /api/register<br/>(tokenAddress: mint PDA,<br/>chainId: "devnet")
+    B->>B: 12. normalizeAddress preserves case<br/>distributionModel: "merkle"<br/>Store in Firestore iao-tokens
+    B-->>F: 13. Success
+  </div>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      securityLevel: 'loose',
+      sequence: {
+        actorMargin: 50,
+        boxMargin: 10,
+        boxTextMargin: 5,
+        noteMargin: 10,
+        messageMargin: 35,
+        mirrorActors: false
+      },
+      themeVariables: {
+        primaryColor: '#7c3aed',
+        primaryTextColor: '#f1f5f9',
+        primaryBorderColor: '#a78bfa',
+        lineColor: '#94a3b8',
+        actorBkg: '#1e293b',
+        actorBorder: '#7c3aed',
+        actorTextColor: '#f1f5f9',
+        signalColor: '#94a3b8',
+        signalTextColor: '#f1f5f9',
+        noteBkgColor: '#7c3aed',
+        noteTextColor: '#fff',
+        noteBorderColor: '#a78bfa'
+      }
+    });
+  </script>
+</body>
+</html>

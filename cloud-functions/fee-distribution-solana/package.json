@@ -1,0 +1,22 @@
+{
+  "name": "fee-distribution-solana-function",
+  "version": "1.0.0",
+  "description": "Cloud Function to distribute accumulated Solana fees to builders and team via distribute_fees instruction",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "gcp-build": "tsc",
+    "build": "tsc",
+    "start": "npx functions-framework --target=distributeFeesSolana --source=dist/"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}
