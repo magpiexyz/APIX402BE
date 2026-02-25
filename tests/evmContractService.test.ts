@@ -1,112 +1,106 @@
 /**
  * Tests for EVM Contract Service
+ * Uses viem for direct RPC calls — no Thirdweb dependency.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock environment variables
-const originalEnv = process.env;
+// Shared mock for viem's readContract (called as this.client.readContract)
+const mockReadContract = vi.fn();
 
-// Mock thirdweb SDK
-vi.mock('thirdweb', () => ({
-  createThirdwebClient: vi.fn(() => ({ secretKey: 'mock-key' })),
-  getContract: vi.fn(() => ({})),
-  readContract: vi.fn(),
+// Mock viem — createPublicClient returns an object with our mockReadContract
+vi.mock('viem', () => ({
+  createPublicClient: vi.fn(() => ({
+    readContract: mockReadContract,
+  })),
+  http: vi.fn(),
 }));
 
-// Mock thirdweb chains
-vi.mock('thirdweb/chains', () => ({
+// Mock viem/chains
+vi.mock('viem/chains', () => ({
   baseSepolia: { id: 84532, name: 'Base Sepolia' },
 }));
 
-// Mock fs
+// Mock fs for ABI loading
 vi.mock('fs', () => ({
   default: {
     readFileSync: vi.fn(() => JSON.stringify([
       { name: 'graduationThreshold', type: 'function', inputs: [], outputs: [{ type: 'uint256' }] },
       { name: 'totalTokensDistributed', type: 'function', inputs: [], outputs: [{ type: 'uint256' }] },
+      { name: 'totalFeesCollected', type: 'function', inputs: [], outputs: [{ type: 'uint256' }] },
+      { name: 'liquidityDeployed', type: 'function', inputs: [], outputs: [{ type: 'bool' }] },
+      { name: 'paymentTokenPrice', type: 'function', inputs: [], outputs: [{ type: 'uint256' }] },
+      { name: 'paymentTokenDecimals', type: 'function', inputs: [], outputs: [{ type: 'uint8' }] },
+      { name: 'symbol', type: 'function', inputs: [], outputs: [{ type: 'string' }] },
+      { name: 'name', type: 'function', inputs: [], outputs: [{ type: 'string' }] },
+      { name: 'paymentTokenInfo', type: 'function', inputs: [], outputs: [{ type: 'tuple' }] },
     ])),
   },
 }));
 
-import { createThirdwebClient, getContract, readContract } from 'thirdweb';
+import { createPublicClient } from 'viem';
 
 describe('EVMContractService', () => {
   beforeEach(() => {
-    vi.resetModules();
-    process.env = { ...originalEnv };
-    process.env.THIRDWEB_SECRET_KEY = 'test-secret-key';
     vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-    vi.clearAllMocks();
+    mockReadContract.mockReset();
   });
 
   describe('constructor', () => {
-    it('should initialize client when secret key is set', async () => {
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      expect(createThirdwebClient).toHaveBeenCalled();
-    });
-
-    it('should warn when secret key is not set', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
+    it('should initialize viem client with default RPC URL', async () => {
       vi.resetModules();
       const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
+      new EVMContractService('0xFactoryAddress');
+      expect(createPublicClient).toHaveBeenCalled();
+    });
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('THIRDWEB_SECRET_KEY not set'));
-      consoleSpy.mockRestore();
+    it('should use RPC_URL env var when set', async () => {
+      vi.resetModules();
+      const savedRpc = process.env.RPC_URL;
+      process.env.RPC_URL = 'https://custom-rpc.example.com';
+      const { http } = await import('viem');
+      const { EVMContractService } = await import('../src/services/evmContractService.js');
+      new EVMContractService('0xFactoryAddress');
+      expect(http).toHaveBeenCalledWith('https://custom-rpc.example.com');
+      process.env.RPC_URL = savedRpc;
     });
   });
 
   describe('getTokenMetrics', () => {
-    it('should return null when client not initialized', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      vi.resetModules();
-
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      const result = await service.getTokenMetrics('0xTokenAddress');
-      expect(result).toBeNull();
-    });
-
     it('should return token metrics when successful', async () => {
-      vi.mocked(readContract)
+      // Promise.all order: graduationThreshold, totalTokensDistributed, totalFeesCollected,
+      //                    liquidityDeployed, paymentTokenPrice, paymentTokenDecimals
+      mockReadContract
         .mockResolvedValueOnce(BigInt('1000000000000000000000')) // graduationThreshold
-        .mockResolvedValueOnce(BigInt('500000000000000000000'))  // totalTokensDistributed
-        .mockResolvedValueOnce(BigInt('1000000'))               // totalFeesCollected
-        .mockResolvedValueOnce(BigInt('1000000'))               // paymentTokenPrice
+        .mockResolvedValueOnce(BigInt('500000000000000000000'))  // totalTokensDistributed (50%)
+        .mockResolvedValueOnce(BigInt('1000000'))                // totalFeesCollected
+        .mockResolvedValueOnce(false)                            // liquidityDeployed
+        .mockResolvedValueOnce(BigInt('1000000'))                // paymentTokenPrice
         .mockResolvedValueOnce(6);                               // paymentTokenDecimals
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenMetrics('0xTokenAddress');
 
       expect(result).not.toBeNull();
       expect(result?.tokenAddress).toBe('0xtokenaddress');
       expect(result?.bondingProgress).toBe(50);
       expect(result?.isGraduated).toBe(false);
+      expect(result?.liquidityDeployed).toBe(false);
+      expect(result?.paymentTokenDecimals).toBe(6);
     });
 
     it('should calculate bonding progress correctly at 100%', async () => {
-      vi.mocked(readContract)
+      mockReadContract
         .mockResolvedValueOnce(BigInt('1000'))  // graduationThreshold
-        .mockResolvedValueOnce(BigInt('1000'))  // totalTokensDistributed (equal = graduated)
+        .mockResolvedValueOnce(BigInt('1000'))  // totalTokensDistributed (100%)
         .mockResolvedValueOnce(BigInt('100'))   // totalFeesCollected
+        .mockResolvedValueOnce(true)            // liquidityDeployed
         .mockResolvedValueOnce(BigInt('1'))     // paymentTokenPrice
         .mockResolvedValueOnce(0);              // paymentTokenDecimals
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenMetrics('0xTokenAddress');
 
       expect(result?.bondingProgress).toBe(100);
@@ -114,28 +108,27 @@ describe('EVMContractService', () => {
     });
 
     it('should cap bonding progress at 100%', async () => {
-      vi.mocked(readContract)
+      mockReadContract
         .mockResolvedValueOnce(BigInt('1000'))  // graduationThreshold
         .mockResolvedValueOnce(BigInt('1500'))  // totalTokensDistributed (over threshold)
         .mockResolvedValueOnce(BigInt('100'))   // totalFeesCollected
+        .mockResolvedValueOnce(true)            // liquidityDeployed
         .mockResolvedValueOnce(BigInt('1'))     // paymentTokenPrice
         .mockResolvedValueOnce(0);              // paymentTokenDecimals
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenMetrics('0xTokenAddress');
 
       expect(result?.bondingProgress).toBe(100);
     });
 
     it('should return null on contract read error', async () => {
-      vi.mocked(readContract).mockRejectedValue(new Error('Contract error'));
+      mockReadContract.mockRejectedValue(new Error('Contract error'));
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenMetrics('0xTokenAddress');
 
       expect(result).toBeNull();
@@ -144,27 +137,11 @@ describe('EVMContractService', () => {
   });
 
   describe('getFactoryInfo', () => {
-    it('should return null when client not initialized', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      vi.resetModules();
-
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      const result = await service.getFactoryInfo();
-      expect(result).toBeNull();
-    });
-
     it('should return factory info when successful', async () => {
-      vi.mocked(readContract).mockResolvedValue([
-        '0xPaymentTokenAddress',
-        BigInt('1000000'),
-        6,
-      ]);
+      mockReadContract.mockResolvedValue(['0xPaymentTokenAddress', BigInt('1000000'), 6]);
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getFactoryInfo();
 
       expect(result).not.toBeNull();
@@ -174,12 +151,11 @@ describe('EVMContractService', () => {
     });
 
     it('should return null on contract read error', async () => {
-      vi.mocked(readContract).mockRejectedValue(new Error('Contract error'));
+      mockReadContract.mockRejectedValue(new Error('Contract error'));
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getFactoryInfo();
 
       expect(result).toBeNull();
@@ -188,101 +164,112 @@ describe('EVMContractService', () => {
   });
 
   describe('tokenExists', () => {
-    it('should return false when client not initialized', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      vi.resetModules();
-
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      const result = await service.tokenExists('0xTokenAddress');
-      expect(result).toBe(false);
-    });
-
     it('should return true when token exists', async () => {
-      vi.mocked(readContract).mockResolvedValue('TEST');
+      mockReadContract.mockResolvedValue('TEST');
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.tokenExists('0xTokenAddress');
+
       expect(result).toBe(true);
     });
 
     it('should return false when token does not exist', async () => {
-      vi.mocked(readContract).mockRejectedValue(new Error('Token not found'));
+      mockReadContract.mockRejectedValue(new Error('Token not found'));
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.tokenExists('0xInvalidToken');
+
       expect(result).toBe(false);
     });
   });
 
   describe('getTokenSymbol', () => {
-    it('should return null when client not initialized', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      vi.resetModules();
-
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      const result = await service.getTokenSymbol('0xTokenAddress');
-      expect(result).toBeNull();
-    });
-
     it('should return symbol when successful', async () => {
-      vi.mocked(readContract).mockResolvedValue('TEST');
+      mockReadContract.mockResolvedValue('TEST');
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenSymbol('0xTokenAddress');
+
       expect(result).toBe('TEST');
     });
 
     it('should return null on error', async () => {
-      vi.mocked(readContract).mockRejectedValue(new Error('Read error'));
+      mockReadContract.mockRejectedValue(new Error('Read error'));
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenSymbol('0xTokenAddress');
+
       expect(result).toBeNull();
     });
   });
 
   describe('getTokenName', () => {
-    it('should return null when client not initialized', async () => {
-      delete process.env.THIRDWEB_SECRET_KEY;
-      vi.resetModules();
-
-      const { EVMContractService } = await import('../src/services/evmContractService.js');
-      const service = new EVMContractService('0xFactoryAddress');
-
-      const result = await service.getTokenName('0xTokenAddress');
-      expect(result).toBeNull();
-    });
-
     it('should return name when successful', async () => {
-      vi.mocked(readContract).mockResolvedValue('Test Token');
+      mockReadContract.mockResolvedValue('Test Token');
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenName('0xTokenAddress');
+
       expect(result).toBe('Test Token');
     });
 
     it('should return null on error', async () => {
-      vi.mocked(readContract).mockRejectedValue(new Error('Read error'));
+      mockReadContract.mockRejectedValue(new Error('Read error'));
 
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
-
       const result = await service.getTokenName('0xTokenAddress');
+
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getPaymentTokenDomain', () => {
+    it('should return name and version from eip712Domain()', async () => {
+      // eip712Domain returns: [fields, name, version, chainId, verifyingContract, salt, extensions]
+      mockReadContract.mockResolvedValue([
+        '0x0f', 'USD Coin', '2', BigInt(84532), '0xUSDC', '0x00', [],
+      ]);
+
+      const { EVMContractService } = await import('../src/services/evmContractService.js');
+      const service = new EVMContractService('0xFactoryAddress');
+      const result = await service.getPaymentTokenDomain('0xUSDC');
+
+      expect(result.name).toBe('USD Coin');
+      expect(result.version).toBe('2');
+    });
+
+    it('should fall back to name() + version "2" when eip712Domain not supported', async () => {
+      mockReadContract
+        .mockRejectedValueOnce(new Error('function not found')) // eip712Domain fails
+        .mockResolvedValueOnce('USD Coin');                     // name() succeeds
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { EVMContractService } = await import('../src/services/evmContractService.js');
+      const service = new EVMContractService('0xFactoryAddress');
+      const result = await service.getPaymentTokenDomain('0xUSDC');
+
+      expect(result.name).toBe('USD Coin');
+      expect(result.version).toBe('2');
+      consoleSpy.mockRestore();
+    });
+
+    it('should return hardcoded fallback when both calls fail', async () => {
+      mockReadContract.mockRejectedValue(new Error('not supported'));
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { EVMContractService } = await import('../src/services/evmContractService.js');
+      const service = new EVMContractService('0xFactoryAddress');
+      const result = await service.getPaymentTokenDomain('0xUnknown');
+
+      expect(result.name).toBe('USD Coin');
+      expect(result.version).toBe('2');
+      consoleSpy.mockRestore();
     });
   });
 
@@ -292,13 +279,8 @@ describe('EVMContractService', () => {
       const service = new EVMContractService('0xFactoryAddress');
 
       // fee=1000000 (1 USDC), price=1000000, decimals=6
-      // (1000000 * 1000000) / 1000000 = 1000000 tokens
-      const result = service.calculateTokenAmount(
-        BigInt('1000000'),
-        BigInt('1000000'),
-        6
-      );
-
+      // (1000000 * 1000000) / 10^6 = 1000000 tokens
+      const result = service.calculateTokenAmount(BigInt('1000000'), BigInt('1000000'), 6);
       expect(result).toBe(BigInt('1000000'));
     });
 
@@ -306,13 +288,13 @@ describe('EVMContractService', () => {
       const { EVMContractService } = await import('../src/services/evmContractService.js');
       const service = new EVMContractService('0xFactoryAddress');
 
-      // fee=1000000000000000000 (1 ETH), price=2000, decimals=18
+      // fee=1e18 (1 ETH), price=2000, decimals=18
+      // (1e18 * 2000) / 10^18 = 2000 tokens
       const result = service.calculateTokenAmount(
         BigInt('1000000000000000000'),
         BigInt('2000'),
         18
       );
-
       expect(result).toBe(BigInt('2000'));
     });
   });
