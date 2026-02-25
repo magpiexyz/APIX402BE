@@ -63,7 +63,7 @@ export class AgentToolService {
    */
   async fetchAvailableServers(): Promise<IaoServer[]> {
     try {
-      const response = await fetch(`${this.backendUrl}/api/servers`)
+      const response = await fetch(`${this.backendUrl}/api/servers?limit=100`)
 
       if (!response.ok) {
         throw new Error(`Failed to fetch servers: ${response.status}`)
@@ -121,9 +121,13 @@ export class AgentToolService {
           const required: string[] = []
 
           for (const param of api.parameters) {
+            let desc = param.description || param.name
+            if (param.example) {
+              desc += ` (e.g. "${param.example}" — use the actual value from the user's message, not this example)`
+            }
             properties[param.name] = {
               type: param.type === 'number' ? 'number' : 'string',
-              description: param.description || param.name
+              description: desc
             }
             if (param.required) {
               required.push(param.name)

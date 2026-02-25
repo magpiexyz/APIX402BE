@@ -146,7 +146,7 @@ describe('AgentToolService', () => {
 
       expect(servers).toHaveLength(2);
       expect(servers[0].slug).toBe('test-server');
-      expect(fetch).toHaveBeenCalledWith('http://localhost:3000/api/servers');
+      expect(fetch).toHaveBeenCalledWith('http://localhost:3000/api/servers?limit=100');
     });
 
     it('should handle data.data response format', async () => {

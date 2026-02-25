@@ -4,7 +4,7 @@
  * Solana addresses (base58) are case-sensitive and preserved as-is.
  */
 export function normalizeAddress(address: string): string {
-  if (address.startsWith('0x')) {
+  if (address.toLowerCase().startsWith('0x')) {
     return address.toLowerCase();
   }
   return address;

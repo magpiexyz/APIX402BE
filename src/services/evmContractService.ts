@@ -2,13 +2,40 @@
  * EVM Contract Service
  * Handles interactions with IAO contracts on EVM chains (Base Sepolia)
  * Reads contract state: graduation threshold, tokens distributed, bonding progress
+ * Uses viem for direct RPC calls — no Thirdweb dependency.
  */
 
-import { createThirdwebClient, getContract, readContract } from 'thirdweb';
-import { baseSepolia } from 'thirdweb/chains';
+import { createPublicClient, http } from 'viem';
+import { baseSepolia } from 'viem/chains';
 import fs from 'fs';
 import path from 'path';
 import { normalizeAddress } from '../utils/normalizeAddress.js';
+
+// Minimal ABI for EIP-5267 eip712Domain() — works on any token that supports it
+const EIP5267ABI = [
+  {
+    name: 'eip712Domain',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'fields', type: 'bytes1' },
+      { name: 'name', type: 'string' },
+      { name: 'version', type: 'string' },
+      { name: 'chainId', type: 'uint256' },
+      { name: 'verifyingContract', type: 'address' },
+      { name: 'salt', type: 'bytes32' },
+      { name: 'extensions', type: 'uint256[]' },
+    ],
+  },
+  {
+    name: 'name',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'string' }],
+  },
+];
 
 // Load IAOToken ABI
 let IAOTokenABI: any[] = [];
@@ -38,6 +65,7 @@ export interface EVMTokenMetrics {
   totalFeesCollected: string;       // BigInt as string
   bondingProgress: number;          // Percentage (0-100)
   isGraduated: boolean;
+  liquidityDeployed: boolean;
   paymentTokenPrice: string;        // BigInt as string
   paymentTokenDecimals: number;
 }
@@ -53,92 +81,48 @@ export interface EVMFactoryInfo {
 }
 
 class EVMContractService {
-  private client: ReturnType<typeof createThirdwebClient> | null = null;
+  // typed as any to avoid strict viem 2.x generic inference issues with dynamic ABIs
+  private client: any;
   private factoryAddress: string;
 
   constructor(factoryAddress: string) {
     this.factoryAddress = factoryAddress;
-    this.initializeClient();
-  }
-
-  /**
-   * Initialize Thirdweb client
-   */
-  private initializeClient(): void {
-    const secretKey = process.env.THIRDWEB_SECRET_KEY;
-    if (!secretKey) {
-      console.warn('⚠️  THIRDWEB_SECRET_KEY not set - EVM contract reads will fail');
-      return;
-    }
-
-    try {
-      this.client = createThirdwebClient({ secretKey });
-      console.log('✅ EVM Contract Service initialized');
-    } catch (error) {
-      console.error('❌ Failed to initialize Thirdweb client:', error);
-    }
+    const rpcUrl = process.env.RPC_URL || 'https://sepolia.base.org';
+    this.client = createPublicClient({
+      chain: baseSepolia,
+      transport: http(rpcUrl),
+    });
+    console.log('✅ EVM Contract Service initialized (viem)');
   }
 
   /**
    * Get token metrics from on-chain contract
    */
   async getTokenMetrics(tokenAddress: string): Promise<EVMTokenMetrics | null> {
-    if (!this.client) {
-      console.error('❌ Thirdweb client not initialized');
-      return null;
-    }
-
     try {
-      const contract = getContract({
-        client: this.client,
-        chain: baseSepolia,
-        address: tokenAddress,
-        abi: IAOTokenABI,
-      });
+      const addr = tokenAddress as `0x${string}`;
 
-      // Read multiple contract values in parallel
       const [
         graduationThreshold,
         totalTokensDistributed,
         totalFeesCollected,
+        liquidityDeployed,
         paymentTokenPrice,
         paymentTokenDecimals,
       ] = await Promise.all([
-        readContract({
-          contract,
-          method: 'function graduationThreshold() view returns (uint256)',
-          params: [],
-        }),
-        readContract({
-          contract,
-          method: 'function totalTokensDistributed() view returns (uint256)',
-          params: [],
-        }),
-        readContract({
-          contract,
-          method: 'function totalFeesCollected() view returns (uint256)',
-          params: [],
-        }),
-        readContract({
-          contract,
-          method: 'function paymentTokenPrice() view returns (uint256)',
-          params: [],
-        }),
-        readContract({
-          contract,
-          method: 'function paymentTokenDecimals() view returns (uint8)',
-          params: [],
-        }),
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'graduationThreshold' }) as Promise<bigint>,
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'totalTokensDistributed' }) as Promise<bigint>,
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'totalFeesCollected' }) as Promise<bigint>,
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'liquidityDeployed' }) as Promise<boolean>,
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'paymentTokenPrice' }) as Promise<bigint>,
+        this.client.readContract({ address: addr, abi: IAOTokenABI, functionName: 'paymentTokenDecimals' }) as Promise<number>,
       ]);
 
-      // Calculate bonding progress
       const threshold = BigInt(graduationThreshold.toString());
       const distributed = BigInt(totalTokensDistributed.toString());
       const bondingProgress = threshold > 0n
         ? Number((distributed * 100n) / threshold)
         : 0;
-
-      const isGraduated = distributed >= threshold;
 
       return {
         tokenAddress: normalizeAddress(tokenAddress),
@@ -146,7 +130,8 @@ class EVMContractService {
         totalTokensDistributed: totalTokensDistributed.toString(),
         totalFeesCollected: totalFeesCollected.toString(),
         bondingProgress: Math.min(bondingProgress, 100),
-        isGraduated,
+        isGraduated: liquidityDeployed === true,
+        liquidityDeployed: liquidityDeployed === true,
         paymentTokenPrice: paymentTokenPrice.toString(),
         paymentTokenDecimals: Number(paymentTokenDecimals),
       };
@@ -160,29 +145,17 @@ class EVMContractService {
    * Get factory info from on-chain contract
    */
   async getFactoryInfo(): Promise<EVMFactoryInfo | null> {
-    if (!this.client) {
-      console.error('❌ Thirdweb client not initialized');
-      return null;
-    }
-
     try {
-      const contract = getContract({
-        client: this.client,
-        chain: baseSepolia,
-        address: this.factoryAddress,
+      const addr = this.factoryAddress as `0x${string}`;
+      const paymentTokenInfo = await this.client.readContract({
+        address: addr,
         abi: IAOTokenFactoryABI,
-      });
-
-      // Read payment token info
-      const paymentTokenInfo = await readContract({
-        contract,
-        method: 'function paymentTokenInfo() view returns (address token, uint256 price, uint8 decimals)',
-        params: [],
-      });
+        functionName: 'paymentTokenInfo',
+      }) as [string, bigint, number];
 
       return {
         factoryAddress: this.factoryAddress,
-        paymentToken: paymentTokenInfo[0] as string,
+        paymentToken: paymentTokenInfo[0],
         paymentTokenPrice: paymentTokenInfo[1].toString(),
         paymentTokenDecimals: Number(paymentTokenInfo[2]),
       };
@@ -196,25 +169,12 @@ class EVMContractService {
    * Check if a token exists on-chain
    */
   async tokenExists(tokenAddress: string): Promise<boolean> {
-    if (!this.client) {
-      return false;
-    }
-
     try {
-      const contract = getContract({
-        client: this.client,
-        chain: baseSepolia,
-        address: tokenAddress,
+      await this.client.readContract({
+        address: tokenAddress as `0x${string}`,
         abi: IAOTokenABI,
+        functionName: 'symbol',
       });
-
-      // Try to read symbol - if it exists, token is valid
-      await readContract({
-        contract,
-        method: 'function symbol() view returns (string)',
-        params: [],
-      });
-
       return true;
     } catch {
       return false;
@@ -225,25 +185,13 @@ class EVMContractService {
    * Get token symbol from contract
    */
   async getTokenSymbol(tokenAddress: string): Promise<string | null> {
-    if (!this.client) {
-      return null;
-    }
-
     try {
-      const contract = getContract({
-        client: this.client,
-        chain: baseSepolia,
-        address: tokenAddress,
+      const symbol = await this.client.readContract({
+        address: tokenAddress as `0x${string}`,
         abi: IAOTokenABI,
-      });
-
-      const symbol = await readContract({
-        contract,
-        method: 'function symbol() view returns (string)',
-        params: [],
-      });
-
-      return symbol as string;
+        functionName: 'symbol',
+      }) as string;
+      return symbol;
     } catch {
       return null;
     }
@@ -253,27 +201,51 @@ class EVMContractService {
    * Get token name from contract
    */
   async getTokenName(tokenAddress: string): Promise<string | null> {
-    if (!this.client) {
-      return null;
-    }
-
     try {
-      const contract = getContract({
-        client: this.client,
-        chain: baseSepolia,
-        address: tokenAddress,
+      const name = await this.client.readContract({
+        address: tokenAddress as `0x${string}`,
         abi: IAOTokenABI,
-      });
-
-      const name = await readContract({
-        contract,
-        method: 'function name() view returns (string)',
-        params: [],
-      });
-
-      return name as string;
+        functionName: 'name',
+      }) as string;
+      return name;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Get EIP-712 domain name and version from a token contract.
+   * Tries EIP-5267 eip712Domain() first; falls back to name() + version "2".
+   */
+  async getPaymentTokenDomain(tokenAddress: string): Promise<{ name: string; version: string }> {
+    const addr = tokenAddress as `0x${string}`;
+    try {
+      const result = await this.client.readContract({
+        address: addr,
+        abi: EIP5267ABI,
+        functionName: 'eip712Domain',
+      }) as [string, string, string, bigint, string, string, bigint[]];
+      const name = result[1];
+      const version = result[2];
+      if (name && version) {
+        console.log(`✅ EIP-712 domain from contract: name="${name}" version="${version}"`);
+        return { name, version };
+      }
+    } catch {
+      // Contract doesn't support EIP-5267 — fall through to fallback
+    }
+    // Fallback: read name() and assume version "2" (standard for USDC)
+    try {
+      const name = await this.client.readContract({
+        address: addr,
+        abi: EIP5267ABI,
+        functionName: 'name',
+      }) as string;
+      console.log(`⚠️  EIP-5267 not supported; using name()="${name}" version="2" for EIP-712 domain`);
+      return { name, version: '2' };
+    } catch {
+      console.warn(`⚠️  Could not read EIP-712 domain for ${tokenAddress}; using fallback "USD Coin" v2`);
+      return { name: 'USD Coin', version: '2' };
     }
   }
 

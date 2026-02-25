@@ -88,6 +88,7 @@ echo ""
 echo "Cloud Functions secrets:"
 create_or_update_secret "automation-private-key" "$AUTOMATION_PRIVATE_KEY"
 create_or_update_secret "automation-private-key-solana" "$AUTOMATION_PRIVATE_KEY_SOLANA"
+create_or_update_secret "fee-distribution-secret" "$FEE_DISTRIBUTION_SECRET"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

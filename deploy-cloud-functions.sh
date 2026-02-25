@@ -116,13 +116,69 @@ echo -e "${GREEN}graduation-solana deployed: ${YELLOW}$GRADUATION_SOLANA_URL${NC
 echo ""
 
 # ============================================
+# Deploy fee-distribution-evm
+# ============================================
+echo -e "${GREEN}Deploying fee-distribution-evm...${NC}"
+
+cd cloud-functions/fee-distribution-evm
+
+gcloud functions deploy fee-distribution-evm \
+  --gen2 \
+  --runtime=nodejs20 \
+  --region=$REGION \
+  --source=. \
+  --entry-point=distributeFeesEvm \
+  --trigger-http \
+  --allow-unauthenticated \
+  --timeout=540s \
+  --set-env-vars="RPC_URL=$RPC_URL,TOKEN_DISTRIBUTOR=$TOKEN_DISTRIBUTOR,BACKEND_URL=$BACKEND_URL" \
+  --set-secrets="AUTOMATION_PRIVATE_KEY=automation-private-key:latest,FEE_DISTRIBUTION_SECRET=fee-distribution-secret:latest"
+
+cd ../..
+
+FEE_DIST_EVM_URL=$(gcloud functions describe fee-distribution-evm --region=$REGION --gen2 --format='value(serviceConfig.uri)' 2>/dev/null || echo "pending...")
+
+echo ""
+echo -e "${GREEN}fee-distribution-evm deployed: ${YELLOW}$FEE_DIST_EVM_URL${NC}"
+echo ""
+
+# ============================================
+# Deploy fee-distribution-solana
+# ============================================
+echo -e "${GREEN}Deploying fee-distribution-solana...${NC}"
+
+cd cloud-functions/fee-distribution-solana
+
+gcloud functions deploy fee-distribution-solana \
+  --gen2 \
+  --runtime=nodejs20 \
+  --region=$REGION \
+  --source=. \
+  --entry-point=distributeFeesSolana \
+  --trigger-http \
+  --allow-unauthenticated \
+  --timeout=540s \
+  --set-env-vars="SOLANA_RPC_URL=$SOLANA_RPC_URL,IAO_PROGRAM_ID=$IAO_PROGRAM_ID,BACKEND_URL=$BACKEND_URL" \
+  --set-secrets="AUTOMATION_PRIVATE_KEY=automation-private-key-solana:latest,FEE_DISTRIBUTION_SECRET=fee-distribution-secret:latest"
+
+cd ../..
+
+FEE_DIST_SOLANA_URL=$(gcloud functions describe fee-distribution-solana --region=$REGION --gen2 --format='value(serviceConfig.uri)' 2>/dev/null || echo "pending...")
+
+echo ""
+echo -e "${GREEN}fee-distribution-solana deployed: ${YELLOW}$FEE_DIST_SOLANA_URL${NC}"
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Cloud Functions Deployed!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "graduation-evm:    ${YELLOW}$GRADUATION_EVM_URL${NC}"
-echo -e "graduation-solana: ${YELLOW}$GRADUATION_SOLANA_URL${NC}"
+echo -e "graduation-evm:          ${YELLOW}$GRADUATION_EVM_URL${NC}"
+echo -e "graduation-solana:       ${YELLOW}$GRADUATION_SOLANA_URL${NC}"
+echo -e "fee-distribution-evm:    ${YELLOW}$FEE_DIST_EVM_URL${NC}"
+echo -e "fee-distribution-solana: ${YELLOW}$FEE_DIST_SOLANA_URL${NC}"
 echo ""
-echo -e "Both functions will callback to: ${YELLOW}$BACKEND_URL${NC}"
+echo -e "All functions will callback to: ${YELLOW}$BACKEND_URL${NC}"

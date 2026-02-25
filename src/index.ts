@@ -3,12 +3,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { config } from 'dotenv'
 import cors from 'cors'
-import { facilitator as thirdwebFacilitatorFn, settlePayment } from 'thirdweb/x402'
-import { createThirdwebClient } from 'thirdweb'
-import { baseSepolia } from 'thirdweb/chains'
-import { getContract, readContract } from 'thirdweb'
+import { HTTPFacilitatorClient } from '@x402/core/server'
+import { baseSepolia } from 'viem/chains'
 import fetch from 'node-fetch'
-import fs from 'fs'
 import { decompress as decompressZstd } from 'fzstd'
 import { Connection, Transaction } from '@solana/web3.js'
 import bs58 from 'bs58'
@@ -31,35 +28,20 @@ import { dispatchGraduationTask } from './services/graduationDispatcher.js'
 import { normalizeAddress } from './utils/normalizeAddress.js'
 import { acquireGraduationLock, releaseGraduationLock } from './services/graduationLock.js'
 import { notifyForGraduation } from './services/graduationNotifier.js'
+import { EVMContractService } from './services/evmContractService.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Load IAOToken ABI
-let IAOTokenABI: any[] = []
-try {
-  const abiPath = path.join(process.cwd(), 'abis/IAOToken.json')
-  IAOTokenABI = JSON.parse(fs.readFileSync(abiPath, 'utf-8'))
-  console.log('✅ IAOToken ABI loaded')
-} catch (error) {
-  console.error('❌ Failed to load IAOToken ABI:', error)
-}
-
-// Load IAOTokenFactory ABI
-let IAOTokenFactoryABI: any[] = []
-try {
-  const factoryAbiPath = path.join(process.cwd(), 'abis/IAOTokenFactory.json')
-  IAOTokenFactoryABI = JSON.parse(fs.readFileSync(factoryAbiPath, 'utf-8'))
-  console.log('✅ IAOTokenFactory ABI loaded')
-} catch (error) {
-  console.error('❌ Failed to load IAOTokenFactory ABI:', error)
-}
 
 // IAO Token Factory address (from constants or env)
 const IAO_FACTORY_ADDRESS = "0x9E2CF215276e3Ad1f94e0355c4D821E3E9c3d800";
 
 // Load environment variables
 config()
+
+// EVM contract service — viem-based, no Thirdweb dependency
+const evmContractService = new EVMContractService(IAO_FACTORY_ADDRESS)
 
 // Configure Cloudinary for logo uploads
 if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
@@ -79,7 +61,7 @@ const app = express()
 const corsOptions = {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'PAYMENT-SIGNATURE', 'X-Api-Version'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'PAYMENT-SIGNATURE', 'X-PAYMENT', 'X-Api-Version'],
   credentials: true,
   optionsSuccessStatus: 200
 }
@@ -492,39 +474,21 @@ function sanitizeApisForPublic(apis: ApiEntry[]): Omit<ApiEntry, 'apiUrl'>[] {
 }
 
 
-// Thirdweb facilitator setup for /api/* routes
-// Create thirdweb client and facilitator instance
-// NOTE: serverWalletAddress is required for facilitator initialization but payments 
-// will be routed to individual token addresses (payTo parameter in settlePayment)
-// See: https://portal.thirdweb.com/x402/facilitator
-let thirdwebClient: any = null
-let thirdwebFacilitator: any = null
+// x402 Facilitator client — official @x402/core HTTPFacilitatorClient
+// Default: https://x402.org/facilitator (Coinbase CDP)
+// Override with X402_FACILITATOR_URL env var
+let openFacilitator: HTTPFacilitatorClient | null = null
 
-if (process.env.THIRDWEB_SECRET_KEY && process.env.THIRDWEB_SERVER_WALLET_ADDRESS) {
-  try {
-    thirdwebClient = createThirdwebClient({
-      secretKey: process.env.THIRDWEB_SECRET_KEY,
-    })
-
-    thirdwebFacilitator = thirdwebFacilitatorFn({
-      client: thirdwebClient,
-      serverWalletAddress: process.env.THIRDWEB_SERVER_WALLET_ADDRESS,
-      // Optional: waitUntil can be "simulated", "submitted", or "confirmed" (default)
-      waitUntil: "confirmed",
-    })
-
-    console.log("✅ Thirdweb facilitator initialized for /api/* endpoints")
-    console.log(`   Note: Payments will be routed to individual token addresses`)
-  } catch (error) {
-    console.error("⚠️  Failed to initialize Thirdweb facilitator:", error)
-    console.log("   Set THIRDWEB_SECRET_KEY and THIRDWEB_SERVER_WALLET_ADDRESS to enable Thirdweb facilitator")
-  }
-} else {
-  console.log("⚠️  Thirdweb credentials not found - /api/* routes will not process payments")
-  console.log("   Set THIRDWEB_SECRET_KEY and THIRDWEB_SERVER_WALLET_ADDRESS to enable Thirdweb facilitator")
-  console.log("   Get your secret key from: https://portal.thirdweb.com")
-  console.log("   Get your server wallet address from your project dashboard")
+try {
+  openFacilitator = new HTTPFacilitatorClient({
+    url: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+  })
+  console.log(`✅ x402 Facilitator initialized: ${process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator'}`)
+} catch (error) {
+  console.error("⚠️  Failed to initialize x402 Facilitator:", error)
+  console.log("   Set X402_FACILITATOR_URL to override the default facilitator URL")
 }
+
 
 /**
  * Validate slug format: lowercase alphanumeric with hyphens, 3-30 chars
@@ -715,98 +679,133 @@ async function verifyPaymentAuthorization(paymentData: string, expectedPayTo: st
 }
 
 /**
- * Execute EIP-3009 payment transfer using thirdweb facilitator
+ * Execute EIP-3009 payment transfer using x402 Facilitator (@x402/core)
  * This should only be called AFTER builder successfully returns data
  */
 async function executePaymentTransfer(
-  paymentData: string, 
+  paymentData: string,
   paymentToken: string,
   req: any,
   tokenAddress: string,
-  fee: string, // API-specific fee
+  fee: string, // API-specific fee in USDC micro-units (6 decimals)
   serverSlug: string,
   apiSlug: string,
   apiName: string
 ): Promise<{ success: boolean; txHash?: string; error?: string; paymentReceipt?: any }> {
   try {
-    if (!thirdwebFacilitator || !thirdwebClient) {
-      return { success: false, error: 'Thirdweb facilitator not initialized' }
+    if (!openFacilitator) {
+      return { success: false, error: 'x402 Facilitator not initialized' }
     }
-    
-    // Normalize HTTP method
-    let normalizedMethod = req.method.toUpperCase()
-    if (normalizedMethod === 'HEAD') {
-      normalizedMethod = 'GET'
+
+    // Decode payment payload from base64 (sent in PAYMENT-SIGNATURE header)
+    let decodedPayment: any
+    try {
+      decodedPayment = JSON.parse(Buffer.from(paymentData, 'base64').toString('utf-8'))
+      console.log('📦 Decoded payment payload structure:', JSON.stringify({
+        x402Version: decodedPayment?.x402Version,
+        scheme: decodedPayment?.scheme,
+        network: decodedPayment?.network,
+        hasAccepted: !!decodedPayment?.accepted,
+        accepted: decodedPayment?.accepted,
+        hasPayload: !!decodedPayment?.payload,
+        payloadKeys: decodedPayment?.payload ? Object.keys(decodedPayment.payload) : [],
+        authTo: decodedPayment?.payload?.authorization?.to,
+        authValue: decodedPayment?.payload?.authorization?.value,
+      }, null, 2))
+    } catch (parseError: any) {
+      return { success: false, error: `Failed to decode payment data: ${parseError.message}` }
     }
-    const supportedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
-    if (!supportedMethods.includes(normalizedMethod)) {
-      normalizedMethod = 'GET'
+
+    // Normalize payment to proper V2 format if needed.
+    // Thirdweb SDK quirk: when it receives a V2 402 response it sets x402Version=2
+    // but keeps scheme/network at the top level (V1 structure) without building `accepted`.
+    // x402.org/facilitator expects proper V2 with `accepted: { scheme, network, ... }`.
+    let paymentForFacilitator = decodedPayment
+    if (decodedPayment?.x402Version === 2 && !decodedPayment?.accepted && decodedPayment?.scheme) {
+      console.log('🔧 Normalizing malformed V2 payment → proper V2 format')
+      paymentForFacilitator = {
+        x402Version: 2,
+        accepted: {
+          scheme: decodedPayment.scheme,
+          network: decodedPayment.network,   // "eip155:84532" (CAIP-2)
+          asset: paymentToken,
+          amount: fee,
+          payTo: tokenAddress,
+          maxTimeoutSeconds: 300,
+        },
+        payload: decodedPayment.payload,
+      }
     }
-    
-    // Calculate price string
-    const feeWei = BigInt(fee)
-    const feeUSD = Number(feeWei) / 1e6
-    const priceString = `$${feeUSD.toFixed(2)}`
-    
-    console.log('💳 Calling settlePayment AFTER builder success:', {
-      resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
-      method: normalizedMethod,
+
+    // Fetch EIP-712 domain from the payment token contract (needed by x402.org/facilitator)
+    const tokenDomain = await evmContractService.getPaymentTokenDomain(paymentToken)
+
+    // Build requirements matching @x402/core PaymentRequirements type
+    const network = `eip155:${baseSepolia.id}` as `${string}:${string}` // CAIP-2
+    const requirements = {
+      scheme: 'exact',
+      network,
+      amount: fee,
+      asset: paymentToken,
       payTo: tokenAddress,
-      price: priceString,
-      hasPaymentData: !!paymentData,
-      timestamp: new Date().toISOString()
-    })
-    
-    // Use thirdweb's settlePayment to execute the transfer
-    const paymentResult = await settlePayment({
-      resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
-      method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
-      paymentData,
-      payTo: tokenAddress,  // Payment goes to token address (ORIGINAL)
-      network: baseSepolia,
-      price: priceString,
-      facilitator: thirdwebFacilitator,
-      routeConfig: {
-        description: `IAO Proxy - ${serverSlug}/${apiSlug} - ${apiName}`,
-        mimeType: "application/json",
-        maxTimeoutSeconds: 300,
-      },
-    })
-    
-    console.log('📊 settlePayment result:', {
-      status: paymentResult.status,
-      hasPaymentReceipt: paymentResult.status === 200 && !!paymentResult.paymentReceipt,
-      paymentReceiptKeys: paymentResult.status === 200 ? Object.keys(paymentResult.paymentReceipt || {}) : [],
-      paymentReceipt: paymentResult.status === 200 ? JSON.stringify(paymentResult.paymentReceipt, null, 2) : null,
-      timestamp: new Date().toISOString()
-    })
-    
-    if (paymentResult.status === 200) {
-      console.log('✅ Payment settled successfully!')
-      // Try multiple possible property names for on-chain transaction hash
-      const receipt = paymentResult.paymentReceipt as Record<string, any> || {}
-      const txHash = receipt.transactionHash  // Preferred: actual on-chain hash
-        || receipt.txHash
-        || receipt.hash
-        || (typeof receipt.transaction === 'string' && receipt.transaction.startsWith('0x') ? receipt.transaction : undefined)
-      return {
-        success: true,
-        txHash,
-        paymentReceipt: paymentResult.paymentReceipt
-      }
-    } else {
-      const errorBody = (paymentResult as any).responseBody
-      console.error('❌ Payment settlement failed:', {
-        status: paymentResult.status,
-        errorBody: JSON.stringify(errorBody, null, 2),
-        timestamp: new Date().toISOString()
-      })
-      return { 
-        success: false, 
-        error: errorBody?.errorMessage || 'Payment settlement returned non-200 status',
-        txHash: undefined
-      }
+      maxTimeoutSeconds: 300,
+      extra: {
+        name: tokenDomain.name,    // EIP-712 domain name (e.g. "USD Coin")
+        version: tokenDomain.version, // EIP-712 domain version (e.g. "2")
+      } as Record<string, unknown>,
     }
+
+    console.log('🔍 Verifying payment with x402 Facilitator:', {
+      facilitatorUrl: process.env.X402_FACILITATOR_URL || 'https://x402.org/facilitator',
+      api: `${serverSlug}/${apiSlug}`,
+      payTo: tokenAddress,
+      amount: fee,
+      asset: paymentToken,
+      network: requirements.network,
+      eip712Domain: requirements.extra,
+      timestamp: new Date().toISOString()
+    })
+
+    const verifyResult = await openFacilitator.verify(paymentForFacilitator, requirements)
+
+    if (!verifyResult.isValid) {
+      const reason = verifyResult.invalidReason || 'Payment verification failed'
+      console.error(`❌ x402 verify failed: ${reason}`, verifyResult.invalidMessage || '')
+      return { success: false, error: reason }
+    }
+
+    console.log('💳 Settling payment with x402 Facilitator:', {
+      api: `${serverSlug}/${apiSlug} - ${apiName}`,
+      payer: verifyResult.payer,
+      payTo: tokenAddress,
+      amount: fee,
+      timestamp: new Date().toISOString()
+    })
+
+    const settleResult = await openFacilitator.settle(paymentForFacilitator, requirements)
+
+    console.log(`📊 x402 settle result:`, {
+      success: settleResult.success,
+      transaction: settleResult.transaction,
+      payer: settleResult.payer,
+      network: settleResult.network,
+      errorReason: settleResult.errorReason,
+      timestamp: new Date().toISOString()
+    })
+
+    if (!settleResult.success) {
+      const reason = settleResult.errorReason || 'Payment settlement failed'
+      console.error(`❌ x402 settle failed: ${reason}`)
+      return { success: false, error: reason }
+    }
+
+    console.log(`✅ Payment settled successfully! tx=${settleResult.transaction}`)
+    return {
+      success: true,
+      txHash: settleResult.transaction,
+      paymentReceipt: settleResult,
+    }
+
   } catch (error: any) {
     console.error("Error in executePaymentTransfer:", error)
     return { success: false, error: error.message || 'Failed to execute payment transfer' }
@@ -2343,101 +2342,45 @@ app.get('/api/metrics/:serverSlug', async (req, res) => {
         merkleRoot: tokenDBEntryForMetrics?.merkleRoot || null,
       }
     } else try {
-      // Legacy batch distribution model: read from on-chain
-      if (!thirdwebClient) {
-        console.warn(`⚠️  Thirdweb client not initialized - cannot fetch contract metrics for ${tokenEntry.id}`)
-        throw new Error("Thirdweb client not initialized")
-      }
-
-      if (IAOTokenABI.length === 0) {
-        console.warn(`⚠️  IAOToken ABI not loaded - cannot fetch contract metrics for ${tokenEntry.id}`)
-        throw new Error("IAOToken ABI not loaded")
-      }
-
+      // Legacy batch distribution model: read from on-chain via evmContractService (viem)
       console.log(`📊 Fetching contract metrics for token: ${tokenEntry.id}`)
 
-      const tokenContract = getContract({
-        client: thirdwebClient,
-        chain: baseSepolia,
-        address: tokenEntry.id,
-        abi: IAOTokenABI,
+      const onChain = await evmContractService.getTokenMetrics(tokenEntry.id)
+      if (!onChain) throw new Error("evmContractService.getTokenMetrics returned null")
+
+      // Also try to fetch payment token info from factory
+      const factoryInfo = await evmContractService.getFactoryInfo()
+      if (factoryInfo) {
+        paymentTokenPrice = BigInt(factoryInfo.paymentTokenPrice)
+        paymentTokenDecimals = factoryInfo.paymentTokenDecimals
+      }
+
+      console.log(`📊 Contract values for ${tokenEntry.id}:`, {
+        graduationThreshold: onChain.graduationThreshold,
+        totalTokensDistributed: onChain.totalTokensDistributed,
+        totalFeesCollected: onChain.totalFeesCollected,
+        liquidityDeployed: onChain.liquidityDeployed,
       })
 
-        // Also fetch payment token info from factory for token amount calculation
-        if (IAOTokenFactoryABI.length > 0 && IAO_FACTORY_ADDRESS && IAO_FACTORY_ADDRESS.length === 42) {
-          try {
-            const factoryContract = getContract({
-              client: thirdwebClient,
-              chain: baseSepolia,
-              address: IAO_FACTORY_ADDRESS,
-              abi: IAOTokenFactoryABI,
-            })
+      const isGraduated = onChain.liquidityDeployed
 
-            const paymentTokenInfo = await readContract({
-              contract: factoryContract,
-              method: "paymentTokenInfo",
-              params: [tokenEntry.paymentToken],
-            })
+      // Generate Uniswap link if graduated (Base Sepolia)
+      let uniswapLink: string | undefined
+      if (isGraduated) {
+        uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
+      }
 
-            // paymentTokenInfo returns: [price, paymentToken, paymentTokenDecimals, graduationThreshold, sqrtPriceX96Token0, sqrtPriceX96Token1]
-            if (paymentTokenInfo && Array.isArray(paymentTokenInfo) && paymentTokenInfo.length >= 3) {
-              paymentTokenPrice = BigInt(paymentTokenInfo[0].toString())
-              paymentTokenDecimals = Number(paymentTokenInfo[2].toString())
-            }
-          } catch (factoryError) {
-            console.warn("⚠️  Failed to fetch payment token info from factory:", factoryError)
-          }
-        }
-
-        const [graduationThreshold, totalTokensDistributed, totalFeesCollected, liquidityDeployed] = await Promise.all([
-          readContract({ contract: tokenContract, method: "graduationThreshold", params: [] }),
-          readContract({ contract: tokenContract, method: "totalTokensDistributed", params: [] }),
-          readContract({ contract: tokenContract, method: "totalFeesCollected", params: [] }),
-          readContract({ contract: tokenContract, method: "liquidityDeployed", params: [] }),
-        ])
-
-        console.log(`📊 Contract values for ${tokenEntry.id}:`, {
-          graduationThreshold: graduationThreshold.toString(),
-          totalTokensDistributed: totalTokensDistributed.toString(),
-          totalFeesCollected: totalFeesCollected.toString(),
-          liquidityDeployed: liquidityDeployed.toString(),
-        })
-
-        const graduationThresholdBigInt = BigInt(graduationThreshold.toString())
-        const totalTokensDistributedBigInt = BigInt(totalTokensDistributed.toString())
-        const totalFeesCollectedBigInt = BigInt(totalFeesCollected.toString())
-
-        // Calculate bonding progress percentage with proper precision
-        let bondingProgress = 0
-        if (graduationThresholdBigInt > 0n) {
-          const totalDistributedNum = Number(totalTokensDistributedBigInt)
-          const thresholdNum = Number(graduationThresholdBigInt)
-          bondingProgress = (totalDistributedNum / thresholdNum) * 100
-          if (!isFinite(bondingProgress)) {
-            bondingProgress = 0
-          }
-        }
-
-        const isGraduated = liquidityDeployed === true
-
-        // Generate Uniswap link if graduated (Base Sepolia)
-        let uniswapLink: string | undefined
-        if (isGraduated) {
-          // Use swap interface for Base Sepolia (explore page doesn't support testnets)
-          uniswapLink = `https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=${tokenEntry.id}`
-        }
-
-        contractMetrics = {
-          tokenAddress: tokenEntry.id,
-          graduationThreshold: graduationThresholdBigInt.toString(),
-          totalTokensDistributed: totalTokensDistributedBigInt.toString(),
-          totalFeesCollected: totalFeesCollectedBigInt.toString(),
-          bondingProgress: Math.min(bondingProgress, 100),
-          isGraduated,
-          uniswapLink,
-          paymentTokenPrice: paymentTokenPrice?.toString() || null,
-          paymentTokenDecimals: paymentTokenDecimals,
-        }
+      contractMetrics = {
+        tokenAddress: tokenEntry.id,
+        graduationThreshold: onChain.graduationThreshold,
+        totalTokensDistributed: onChain.totalTokensDistributed,
+        totalFeesCollected: onChain.totalFeesCollected,
+        bondingProgress: onChain.bondingProgress,
+        isGraduated,
+        uniswapLink,
+        paymentTokenPrice: paymentTokenPrice?.toString() || null,
+        paymentTokenDecimals: paymentTokenDecimals,
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorStack = error instanceof Error ? error.stack : undefined
@@ -2644,28 +2587,26 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     const priceString = `$${subscriptionFeeUSD.toFixed(2)}`
 
     // Check if payment is required
-    if (thirdwebClient) {
+    if (openFacilitator) {
       if (!paymentData) {
         // No payment data provided - return 402 with payment requirements
-        // IMPORTANT: User pays to FACILITATOR, facilitator forwards to token
-        const facilitatorAddress = process.env.THIRDWEB_SERVER_WALLET_ADDRESS
-        
+        // With OpenFacilitator, payTo = IAO token address directly (no intermediary wallet)
+        const payToAddress = tokenEntry.id
+
         console.log('💰 Returning 402 Payment Required:', {
-          payTo: facilitatorAddress,
-          finalRecipient: tokenEntry.id,
+          payTo: payToAddress,
           asset: tokenEntry.paymentToken,
           amount: api.fee,
           serverSlug,
           apiSlug,
           timestamp: new Date().toISOString()
         })
-        
-        // Determine network format based on chain type
+
+        // Determine network using CAIP-2 format (x402 V2)
         const networkFormat = isSolanaServer
           ? "solana:devnet"
           : `eip155:${baseSepolia.id}`
 
-        // Build the full x402 V2 response
         const baseUrl = `${req.protocol}://${req.get('host')}`
         const resourceUrl = `${baseUrl}/api/${serverSlug}/${apiSlug}`
 
@@ -2675,40 +2616,23 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           accepts: [{
             scheme: "exact",
             network: networkFormat,
-            payTo: isSolanaServer ? tokenEntry.id : facilitatorAddress,
+            payTo: payToAddress,
             asset: tokenEntry.paymentToken,
             amount: api.fee,
             maxTimeoutSeconds: 300,
+            resource: resourceUrl,
+            description: api.description || `${tokenEntry.name} - ${api.name}`,
             extra: {
               finalRecipient: tokenEntry.id,
               serverSlug: serverSlug,
               apiSlug: apiSlug,
             },
           }],
-          resource: {
-            url: resourceUrl,
-            description: api.description || `${tokenEntry.name} - ${api.name}`,
-            mimeType: "application/json",
-          },
-          extensions: {
-            bazaar: {
-              info: {
-                input: {},
-                output: { success: true, data: {} },
-              },
-              schema: {
-                type: "object",
-                properties: {},
-                required: [],
-              },
-            },
-          },
         })
       }
       
       // Verify payment authorization BEFORE calling builder
-      // User should have signed payment to facilitator address
-      const facilitatorAddress = process.env.THIRDWEB_SERVER_WALLET_ADDRESS!
+      // With OpenFacilitator, user signs payment directly to IAO token address
 
       if (isSolanaServer) {
         // Solana payment verification
@@ -2780,10 +2704,11 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
         }
       } else {
         // EVM payment verification
+        // With OpenFacilitator, user pays directly to IAO token address (tokenEntry.id)
         console.log("📝 Verifying EVM payment authorization...")
         const verifyResult = await verifyPaymentAuthorization(
           paymentData,
-          facilitatorAddress,
+          tokenEntry.id,  // payTo = IAO token address (OpenFacilitator settles directly)
           api.fee, // Use API-specific fee
           tokenEntry.paymentToken
         )
@@ -2798,30 +2723,21 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
             accepts: [{
               scheme: "exact",
               network: `eip155:${baseSepolia.id}`,
-              payTo: facilitatorAddress,
+              payTo: tokenEntry.id,
               asset: tokenEntry.paymentToken,
               amount: api.fee,
               maxTimeoutSeconds: 300,
+              resource: resourceUrl,
+              description: api.description || `${tokenEntry.name} - ${api.name}`,
               extra: { finalRecipient: tokenEntry.id },
             }],
-            resource: {
-              url: resourceUrl,
-              description: api.description || `${tokenEntry.name} - ${api.name}`,
-              mimeType: "application/json",
-            },
-            extensions: {
-              bazaar: {
-                info: { input: {}, output: { success: true, data: {} } },
-                schema: { type: "object", properties: {}, required: [] },
-              },
-            },
           })
         }
       }
 
       console.log("✅ Payment authorization valid - will execute AFTER successful builder response")
     } else {
-      console.warn("⚠️  Thirdweb client not configured - skipping payment verification")
+      console.warn("⚠️  x402 Facilitator not configured - skipping payment verification")
     }
 
     // STEP 1: Forward request to builder endpoint FIRST (before settling payment)
@@ -2833,11 +2749,15 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     try {
       // Build builder endpoint URL with query parameters
       const builderUrl = new URL(api.apiUrl)
-       
-      // Copy all query parameters from proxy request to builder endpoint
-      Object.keys(req.query).forEach((key: string) => {
-        builderUrl.searchParams.set(key, req.query[key] as string)
-      })
+
+      // Preserve the raw query string from the original request to avoid
+      // URLSearchParams reformatting (e.g. adding '=' to valueless params)
+      const rawQuery = req.originalUrl.includes('?')
+        ? req.originalUrl.split('?').slice(1).join('?')
+        : ''
+      if (rawQuery) {
+        builderUrl.search = rawQuery
+      }
 
       console.log(`Forwarding request to builder endpoint (BEFORE payment): ${builderUrl.toString()}`)
 
@@ -3073,7 +2993,7 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
     // Variable to capture transaction hash from payment (used in response)
     let settledTxHash: string | undefined = undefined
 
-    if (thirdwebClient && paymentData) {
+    if (openFacilitator && paymentData) {
       try {
         // Solana payment settlement
         if (isSolanaServer) {
@@ -3163,13 +3083,11 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           } catch (solanaSettleErr: any) {
             console.error("❌ Solana payment settlement failed:", solanaSettleErr.message)
 
-            // Return error to user - they were not charged
-            return res.status(500).json({
+            // Never return API data unless payment is confirmed settled.
+            return res.status(402).json({
               error: "Payment settlement failed",
-              message: "Builder returned data successfully, but Solana payment could not be executed.",
-              x402Version: 2,
+              message: "Your Solana payment could not be executed. You have NOT been charged.",
               paymentError: solanaSettleErr.message,
-              data: parsedData,
               serverSlug,
               apiSlug,
               charged: false
@@ -3199,14 +3117,14 @@ async function handleApiProxyRequest(req: any, res: any, serverSlug: string, api
           )
 
           if (!paymentResult.success) {
-            console.error("❌ Payment execution failed AFTER successful builder response")
+            console.error("❌ Payment settlement failed — withholding API data")
             console.error("Payment error:", paymentResult.error)
-            return res.status(500).json({
-              error: "Payment execution failed",
-              message: "Builder returned data successfully, but payment could not be executed.",
-              x402Version: 2,
+            res.set('X-Payment-Settlement', 'failed')
+            res.set('X-Payment-Error', (paymentResult.error || 'settlement failed').slice(0, 200))
+            return res.status(402).json({
+              error: "Payment settlement failed",
+              message: "Your payment could not be processed. You have NOT been charged. Please retry.",
               paymentError: paymentResult.error,
-              data: parsedData,
               serverSlug,
               apiSlug,
               charged: false
@@ -4345,12 +4263,27 @@ app.get('/api/chat/stream/:sessionId', async (req, res) => {
     console.log(`📨 Loaded ${messages.length} messages from session`)
 
     // Convert to LLM format (filter out system messages, keep only user/assistant)
+    // IMPORTANT: Sanitize "Payment successful!" messages to prevent LLM from
+    // learning to fabricate API results without actually calling tools.
+    // These messages come from the frontend after a payment+API call cycle.
     let llmMessages = messages
       .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-      .map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content
-      }))
+      .map(msg => {
+        // Rewrite payment result messages so LLM doesn't mimic the pattern
+        if (msg.role === 'user' && msg.content?.includes('Payment successful!')) {
+          return {
+            role: 'user' as const,
+            content: msg.content.replace(
+              /Payment successful![^{]*/i,
+              '[SYSTEM: Tool was executed after user payment. Result data:] '
+            )
+          }
+        }
+        return {
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content
+        }
+      })
 
     // Determine effective model (use override if provided)
     const effectiveModel = modelOverride || agent.llmProvider
@@ -4468,6 +4401,14 @@ ${tools.length > 0 ? tools.map(t => {
 - When users ask questions, identify which query params to use from the context
 - If required params are missing, ASK the user for them before calling the tool
 
+⚠️ CRITICAL — USE THE USER'S ACTUAL VALUE, NOT THE EXAMPLE:
+- Parameter descriptions may show example values (e.g., "example.com", "USD", "52.52")
+- These are documentation examples ONLY — do NOT use them as the actual argument
+- ALWAYS extract the real value from what the user typed in their message
+- Example: user says "check google.com" → use domain="google.com", NOT "example.com"
+- Example: user says "convert JPY" → use base="JPY", NOT "USD"
+- If the user has not specified a required value, ASK them — never fall back to an example
+
 📮 USING POST APIs (CRITICAL):
 - Some tools are marked with [POST] in their description - these require a JSON request body
 - For POST APIs, you MUST ask the user what data they want to send BEFORE calling the tool
@@ -4488,6 +4429,26 @@ You: "This API requires a request body. What data would you like to send? Please
 - Don't answer general knowledge questions (history, science, trivia, advice, etc.)
 - Don't provide information that isn't directly from your API tools
 - Don't be rude when redirecting - be helpful and friendly
+
+⛔ CRITICAL - NEVER FABRICATE API RESULTS:
+- NEVER generate text like "Payment successful!" or pretend you already called an API
+- NEVER make up or invent API response data - you MUST call the tool to get real data
+- Even if conversation history shows previous API results, you MUST call the tool again for each new query
+- If you need data from an API, ALWAYS use the tool call - the system will handle payment automatically
+- If you respond without calling a tool, your answer will contain made-up data which is HARMFUL to users
+
+⛔ CRITICAL - RECOGNIZE WHEN AN API CALL FAILED OR RETURNED WRONG DATA:
+- If the tool result contains fields like "usage", "endpoint", "description" but NOT the actual requested data, the API call FAILED or was called with wrong parameters
+- Example of a FAILED response (api documentation, not real data): {"status":"ok","endpoint":"/ssl/v1/grade","description":"Get SSL security grade for a domain","usage":"GET /ssl/v1/grade?domain=example.com"}
+- When you receive this kind of documentation/metadata response, DO NOT present it as real results — instead, tell the user: "The API call did not return useful data. This may be because a required parameter was missing or incorrect."
+- NEVER say "The grade is A+" or summarize fake results from a documentation response
+- DO NOT call the same tool a second time hoping to get a different result — tell the user what went wrong instead
+
+⛔ CRITICAL - DO NOT CALL A TOOL BEFORE YOU HAVE ALL REQUIRED PARAMETERS:
+- Before calling any tool that has required parameters (e.g., domain, city, symbol), verify you have the actual value from the user's message
+- If the user says "check cloudflare.com", you have domain="cloudflare.com" — use it immediately in the tool call
+- NEVER call a tool first to "discover" how it works — the tool description already tells you what parameters are needed
+- One tool call per user request — do not call the same tool twice for the same question
 
 ✨ EXAMPLE INTERACTIONS:
 
@@ -4620,6 +4581,26 @@ Remember: Be friendly in greetings/small talk, but redirect non-API questions to
       }
 
       console.log(`✅ LLM streaming completed. Assistant message length: ${assistantMessage.length}`)
+
+      // Anti-hallucination check: detect if LLM fabricated API results without making a tool call
+      if (toolCalls.length === 0 && !isPaymentResult) {
+        const fabricationPatterns = [
+          /payment successful/i,
+          /i'?ve queried the/i,
+          /here (?:are|is) the (?:result|data|response|classification)/i,
+          /API (?:returned|responded|result)/i,
+        ]
+        const hasFabricatedResult = fabricationPatterns.some(p => p.test(assistantMessage))
+        if (hasFabricatedResult) {
+          console.warn(`⚠️  HALLUCINATION DETECTED: Agent ${agent.id} (${agent.name}) generated API-result-like text without making a tool call`)
+          console.warn(`⚠️  Discarding fabricated response and prompting tool use`)
+          // Discard the fabricated message and send a corrective response
+          assistantMessage = `I need to use my API tool to get accurate data for you. Let me look that up now.`
+          hasError = false
+          // Note: The frontend should detect this pattern and re-trigger the stream
+          // For now, we replace the message to prevent bad data from being saved
+        }
+      }
     } catch (streamError: any) {
       console.error("❌ LLM streaming error:", streamError)
       hasError = true
@@ -5276,7 +5257,7 @@ if (!isVercelServerless) {
     console.log(`🚀 Express server running on port ${PORT}`)
     console.log(`📱 Base URL: http://localhost:${PORT}`)
     console.log(`🔗 Network: Base Mainnet`)
-    console.log(`💰 Facilitator: Thirdweb`)
+    console.log(`💰 Facilitator: x402.org (OpenFacilitator)`)
     console.log(`\n📍 Available endpoints:`)
     console.log(`   POST /api/register              - Register new server with APIs`)
     console.log(`   POST /api/add-api               - Add API to existing server`)
